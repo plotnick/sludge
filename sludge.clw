@@ -5,8 +5,20 @@
 \def\repl{{\sc repl}}
 \def\sludge{{\sc sludge}}
 
-@*\sludge. \sludge\ is the Simple Lisp Usage and Documentation Gathering
-Engine.
+@*\sludge. The Simple Lisp Usage and Documentation Gathering Engine allows
+Emacs (or any other interested client) to request various pieces of
+information from a running Common Lisp process: e.g., function argument
+lists, documentation strings, possible symbol completions, \etc. A server
+written in Common Lisp (this file) listens for connections from a client
+written in Emacs Lisp ({\tt sludge.el}), then reads and responds to
+requests. The system thus behaves essentially as a remote procedure call
+mechanism, with Emacs calling down to a set of pre-defined procedures on
+the Lisp side. The protocol that governs the communication is a simple
+sexp-based stream of Unicode characters, encoded as a stream of octets,
+and may utilize any of several suitable network transports.
+
+The server currently runs only on multi-threaded builds of SBCL, but should
+be simple enough to port to other implementations.
 
 @l
 (provide "SLUDGE")
