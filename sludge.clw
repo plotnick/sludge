@@ -1,7 +1,12 @@
+\font\sc=cmcsc10
+\def\<#1>{\leavevmode\hbox{$\mkern-2mu\langle${\it #1\/}$\rangle$}}
+\def\etc.{{\it \char`&c.\spacefactor1000}}
+\def\eof{{\sc eof}}
+\def\repl{{\sc repl}}
 \def\sludge{{\sc sludge}}
 
-@*\sludge. \sludge is the {\sc s}imple {\sc l}isp {\sc u}sage and
-{\sc d}ocumentation {\sc g}athering {\sc e}ngine.
+@*\sludge. \sludge\ is the Simple Lisp Usage and Documentation Gathering
+Engine.
 
 @l
 (provide "SLUDGE")
@@ -318,3 +323,6 @@ stream for |*trace-output*|.
 (defvar *message-log* nil
   "The stream to which SLUDGE messages should be logged, or NIL to disable
 logging.")
+
+@*Index.
+@t*Index.
