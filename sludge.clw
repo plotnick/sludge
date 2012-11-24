@@ -4,6 +4,7 @@
 \def\eof{{\sc eof}}
 \def\repl{{\sc repl}}
 \def\sludge{{\sc sludge}}
+\def\man#1(#2){the Unix manual page {\bf #1(#2)}}
 
 @*\sludge. The Simple Lisp Usage and Documentation Gathering Engine allows
 Emacs (or any other interested client) to request various pieces of
@@ -24,9 +25,8 @@ be simple enough to port to other implementations.
 (provide "SLUDGE")
 @e
 (defpackage "SLUDGE"
-  (:use "COMMON-LISP"
-        "SB-BSD-SOCKETS"
-        "SB-THREAD")
+  (:use "COMMON-LISP" "SB-BSD-SOCKETS" "SB-THREAD")
+  (:import-from "SB-POSIX" "UMASK")
   (:export))
 @e
 (in-package "SLUDGE")
@@ -57,24 +57,99 @@ but we'd like them to appear near the top of the tangled output.
 @<Global variables@>
 @<Condition classes@>
 
-@ A teeny-tiny server.
+@ We'll start with the low-level guts of the server. This implementation
+is specific to the |sb-sockets| module, but should be easily portable to
+any standard {\sc bsd}-style socket {\sc api}.
+
+To set up the server, we create a socket, bind it to an address, and listen
+for connections. Both {\sc inet} and Unix domain sockets are supported.
+{\sc inet} addresses are denoted by vectors of |(unsigned-byte 8)| or
+lists of the form |(address port)|, while Unix domain socket addresses
+are denoted by pathnames.
 
 @l
-(defgeneric server-listen (address &key backlog)
-  (:method ((address pathname) &key (backlog 1))
+@<Define |with-umask| macro@>
+
+(defgeneric server-listen (address &key)
+  (:method ((address pathname) &key (umask #O77))
     (ignore-errors (delete-file address))
     (let ((socket (make-instance 'local-socket :type :stream)))
-      (socket-bind socket (namestring address))
-      (socket-listen socket backlog)
+      (with-umask umask
+        (socket-bind socket (namestring address)))
+      socket))
+  (:method ((address vector) &key (port *default-port*))
+    (server-listen (list address port)))
+  (:method ((address null) &key (port *default-port*))
+    (server-listen (list *localhost* port)))
+  (:method ((address cons) &key (protocol :tcp))
+    (let ((socket (make-instance 'inet-socket ;
+                                 :type :stream ;
+                                 :protocol protocol)))
+      (destructuring-bind (address port) address
+        (socket-bind socket address port))
+      socket))
+  (:method :around (address &key (backlog *default-backlog*) (verbose nil))
+    (let ((socket (call-next-method)))
+      (when socket
+        (socket-listen socket backlog)
+        (when verbose
+          (multiple-value-bind (address port) (socket-name socket)
+            (format t "Server listening on ~A~@[ port ~D~].~%" address port))))
       socket)))
 
-(defun server-accept (socket &key (repl 'simple-repl) (spawn t))
-  (let ((peer (socket-accept socket)))
-    (if spawn
-        (make-thread 'server-loop :arguments (list peer repl))
-        (server-loop peer repl))))
+@ This little macro executes its body with a temporary file creation mode
+mask; see \man umask(2). We use it to lock down permissions on a Unix domain
+socket.
 
-(defun server-loop (client repl &key (external-format :default))
+@<Define |with-umask|...@>=
+(defmacro with-umask (umask &body body)
+  (let ((old-umask (make-symbol "OLD-UMASK")))
+    `(let ((,old-umask (umask ,umask)))
+       (unwind-protect (progn ,@body)
+         (umask ,old-umask)))))
+
+@ If we're binding to an {\sc inet} socket, we'll use the loopback address
+and an unprivledged port by default.
+
+@<Global variables@>=
+(defparameter *default-port* 31415
+  "Default INET port on which to listen for connections.")
+
+(defparameter *localhost* #(127 0 0 1)
+  "The loopback address.")
+
+@ The |backlog| parameter to |socket-listen| controls the maximum queue
+length for new connections: if there are more than this many outstanding
+connection requests, new connection attemps will be refused.
+See \man listen(2) for more information.
+
+@<Global variables@>=
+(defparameter *default-backlog* 10
+  "Maximum length of pending connections queue.")
+
+@ Once a socket is bound and listening, it is ready to accept connections.
+As soon as we accept a connection, we'll enter the main server loop, which
+is implemented by a function of no arguments that reads messages from
+standard input and responds on standard output. Error output is {\it not\/}
+rebound, so that server loops have a stream on which to write error messages
+that might reach the user directly.
+
+By default, we'll spawn a new thread for each server loop so that it can
+operate in the background. During debugging, however, it can be useful to
+run the server loop in the foreground, so we'll support a |spawn| keyword
+argument which can be used to override the default behavior.
+
+@l
+(defun server-accept (socket server-loop &key (spawn t) (verbose nil))
+  (let ((client (socket-accept socket)))
+    (when verbose
+      (format t "Accepted connection on ~A~@[ from client ~A~].~%"
+              (socket-name socket) (socket-peername client)))
+    (if spawn
+        (make-thread 'serve-client :arguments (list client server-loop))
+        (serve-client client server-loop))))
+
+(defun serve-client (client server-loop &key (external-format :default))
   (unwind-protect
        (let* ((stream (socket-make-stream client
                                           :input t :output t
@@ -82,11 +157,11 @@ but we'd like them to appear near the top of the tangled output.
                                           :external-format external-format))
               (*standard-input* stream)
               (*standard-output* stream))
-         (funcall repl))
+         (funcall server-loop))
     (socket-close client)))
 
-@ Here's a teeny-tiny little top-level \repl. It's mostly useful for testing
-the server. Most of this implementation was cribbed from SBCL's \repl.
+@t Here's a teeny-tiny little top-level \repl, just for testing the server.
+Most of this implementation was cribbed from SBCL's \repl.
 
 @l
 (defun toplevel-eval (form &key (eval #'eval))
@@ -110,6 +185,17 @@ the server. Most of this implementation was cribbed from SBCL's \repl.
         (if values
             (mapc (lambda (value) (format t "~S~&" value)) values)
             (fresh-line))))))
+
+(defun serve-repl (&key (address #P"/tmp/repl") (spawn nil) (verbose t))
+  (let ((server (server-listen address :verbose verbose)))
+    (unwind-protect
+         (server-accept server 'simple-repl ;
+                        :spawn spawn ;
+                        :verbose verbose)
+      (socket-close server)
+      (when verbose (format t "Connection closed.~%"))
+      (when (pathnamep address)
+        (delete-file address)))))
 
 @ A \sludge\ server communicates with a client via a byte-oriented,
 bi-directional communications protocol. This protocol may be informally
