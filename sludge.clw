@@ -385,34 +385,68 @@ request returns the lambda list of the indicated function.
 (define-request-handler :arglist (function)
   (list function (function-lambda-list function)))
 
-@ @l
-(defun sludge-loop ()
+@ Clients are free to just disconnect when they're done, but they might
+prefer to be polite about it and ask that the connection be terminated.
+
+@l
+(define-request-handler :bye (&rest args)
+  (signal 'client-disconnect :args args))
+
+@ @<Condition classes@>=
+(define-condition client-disconnect ()
+  ((args :reader client-disconnect-args :initarg :args)))
+
+@ Having defined all of our message handlers, let's return to the server
+proper. Our main loop for the \sludge\ server reads a request, calls
+|handle-request|, then loops. If \eof\ is encountered during the read, we
+exit the loop. If an error occurs during request handling, we send an error
+response and continue processing with the next message. If the client
+signals their desire to disconnect, we acknowledge the request and exit the
+loop. We also establish a |continue| restart which ignores any malformed
+request; this is useful for interactive debugging, but can also be used as
+a target for |invoke-restart| if the user is not available (e.g., if we're
+running in a background thread).
+
+@l
+(defun main-loop ()
   (let ((*read-eval* nil)
-        (*standard-input* (if *message-log*
-                              (make-echo-stream *standard-input* *message-log*)
-                              *standard-input*))
-        (*standard-output* (if *message-log*
-                               (make-broadcast-stream *standard-output* ;
-                                                      *message-log*)
-                               *standard-output*)))
+        (*standard-input* @<Maybe echo standard input to the message log@>)
+        (*standard-output* @<Maybe echo standard output to the message log@>))
     (loop
       (with-simple-restart (continue "Ignore this request.")
         (let ((request (handler-case (read-request)
                          (end-of-file () (return)))))
           (destructuring-bind (code tag &rest args) request
             (handler-case (apply #'handle-request code tag args)
+              (client-disconnect (condition)
+                (send-message ;
+                 (apply #'make-response-message :ok code tag
+                        (client-disconnect-args condition)))
+                (return))
               (error (condition)
-                (send-message
-                 (make-response-message :error code tag (type-of condition)
+                (send-message ;
+                 (make-response-message :error code tag
+                                        (type-of condition)
                                         (princ-to-string condition)))))))))))
 
-@ To enable message tracing, one might set this variable to a synonym
-stream for |*trace-output*|.
+@ If the variable |*message-log*| is set to an output stream, we'll arrange
+for everything read from standard input and written to standard output to
+be echoed to that stream. A synonym stream for |*trace-output*| or an output
+file stream would both be useful values here.
 
 @<Global variables@>=
 (defvar *message-log* nil
-  "The stream to which SLUDGE messages should be logged, or NIL to disable
-logging.")
+  "The stream to which SLUDGE messages should be logged.")
+
+@ @<Maybe echo standard input...@>=
+(if (and *message-log* (output-stream-p *message-log*))
+    (make-echo-stream *standard-input* *message-log*)
+    *standard-input*)
+
+@ @<Maybe echo standard output...@>=
+(if (and *message-log* (output-stream-p *message-log*))
+    (make-broadcast-stream *standard-output* *message-log*)
+    *standard-output*)
 
 @*Index.
 @t*Index.
