@@ -197,37 +197,33 @@ Most of this implementation was cribbed from SBCL's \repl.
       (when (pathnamep address)
         (delete-file address)))))
 
-@ A \sludge\ server communicates with a client via a byte-oriented,
-bi-directional communications protocol. This protocol may be informally
-specified as follows. Sequences of octets (8-bit bytes) are to be
-interpreted as representing Unicode characters using a pre-arranged
-encoding. (Future versions of the protocol might have some kind of encoding
-negotiation.) The characters form sexps, but with a highly restricted
-syntax. The sexps denote {\it messages\/}, which are conceptually divided
-into {\it requests\/} and {\it responses\/}, but share a common syntax.
+@ The \sludge\ protocol may be informally specified as follows. Sequences
+of octets (8-bit bytes) are interpreted as representing Unicode characters
+using a pre-arranged encoding. (Future versions of the protocol might have
+some kind of encoding negotiation.) The characters form sexps, but with a
+highly restricted syntax. The sexps denote {\it messages\/}, which are
+divided into {\it requests\/} and {\it responses\/}.
 
-Messages consist of lists of the form |(code tag args)|, where |code| is
-any keyword symbol name valid in both Common and Emacs Lisp, |tag| is a
-client-generated identifaction tag for this message, and |args| is a list
-of symbols, strings, and lists of same. If |args| is null and the tag is
-unimportant, the parentheses may be elided; thus |:code| is interpreted
-as a designator for |(:code nil)|.
+Requests are represented as lists of the form |(code tag args)|, where
+|code| is any keyword symbol other than |:ok| and~|:error|, |tag| is a
+client-supplied integer identifier for this message, and |args| is an
+arbitrary list of of Lisp objects. If |args| is null and the tag is not
+important, the parentheses may be elided; thus |:code| is interpreted as a
+designator for |(:code 0)|.
 
-Requests are messages whose code is any keyword symbol except |:ok|
-or~|:error|. The meaning and syntax of the arguments vary.
-
-Responses always take the form |(status code tag args)|, where |status| is
-either |:ok| or |:error|. The former are called {\it successful requests},
-and the args that follow contain the results of the request. If processing
-the request caused an error to be signaled, then an {\it error response\/}
+Responses take the form |(response-code request-code tag args)|, where
+|response-code| is either |:ok| or~|:error|, and the |request-code| and
+|tag| are taken from the request to which this message is a response.
+A successful request generates a response whose status is |:ok|, and the
+args that follow contain the results of the request. If processing the
+request caused an error to be signaled, then an {\it error response\/}
 is generated with the form |(:error code tag name message)|, where |name|
 is the name of the error condition signaled and |message| is a string
-containing any available information about the cause of the error. In both
-response types, |code| and |tag| are the same as those of the request that
-caused this response to be generated.
+containing any available information about the cause of the error.
 
 @l
 (deftype code () 'keyword)
+(deftype tag () 'integer)
 (deftype request-code () '(and code (not response-code)))
 (deftype response-code () '(member :ok :error))
 
@@ -244,47 +240,54 @@ caused this response to be generated.
 @ A request message is any message in which the code isn't a response code.
 
 @l
-(deftype request-message () '(cons request-code (cons * list)))
+(deftype request-message () '(cons request-code (cons tag list)))
 
 (defun make-request-message (code tag &rest args)
-  (check-type code request-code)
+  (declare (request-code code)
+           (tag tag))
   `(,code ,tag ,@args))
 
-(defun message-code (message) (car message))
-(defun message-tag (message) (cadr message))
-(defun message-args (message) (cddr message))
+(defun request-code (message) (car message))
+(defun request-tag (message) (cadr message))
+(defun request-args (message) (cddr message))
 
 @t@l
 (deftest make-request-message
-  (equal (make-request-message :foo nil 'bar 'baz) '(:foo nil bar baz))
+  (equal (make-request-message :foo 0 'bar 'baz) '(:foo 0 bar baz))
   t)
 
 (deftest request-message-type
-  (values (typep '(:foo nil foo) 'request-message)
-          (typep '(:ok nil foo) 'request-message)
+  (values (typep '(:foo 0 foo) 'request-message)
+          (typep '(:ok 0 foo) 'request-message)
           (typep '(:foo) 'request-message))
   t nil nil)
 
-@ A response message begins with a response code followed by a request code.
+@ A response message begins with a response code, which is followed by what
+looks like a request message.
 
 @l
-(deftype response-message () '(cons response-code (cons request-code list)))
+(deftype response-message () '(cons response-code request-message))
 
-(defun make-response-message (code request tag &rest args)
-  (check-type code response-code)
-  (check-type request request-code)
-  `(,code ,request ,tag ,@args))
+(defun make-response-message (response-code request-code tag &rest args)
+  (declare (response-code response-code)
+           (request-code request-code)
+           (tag tag))
+  `(,response-code ,request-code ,tag ,@args))
 
 (defun response-code (message) (car message))
-(defun request-code (message) (cadr message))
+(defun response-request-code (message) (cadr message))
 (defun response-tag (message) (caddr message))
 (defun response-args (message) (cdddr message))
 
 @t@l
+(deftest make-response-message
+  (equal (make-response-message :ok :foo 0 'bar 'baz) '(:ok :foo 0 bar baz))
+  t)
+
 (deftest response-message-type
-  (values (typep '(:ok :foo nil 1 2 3) 'response-message)
-          (typep '(:ok :ok nil 1 2 3) 'response-message)
-          (typep '(:foo :foo nil 1 2 3) 'response-message))
+  (values (typep '(:ok :foo 0 t nil t) 'response-message)
+          (typep '(:ok :ok 0 t nil t) 'response-message)
+          (typep '(:foo :foo 0 t nil t) 'response-message))
   t nil nil)
 
 @ We use the Lisp reader to pull messages off the wire.
@@ -293,14 +296,15 @@ caused this response to be generated.
 (defun read-message (&optional stream)
   (read stream))
 
-@ So, having defined our protocol structures and types, let's turn to the
-processing of requests. 
+@ On the server side, we'll only ever read request messages. This function
+reads one request off the wire and verifies the basic structure of the
+message.
 
 @l
 (defun read-request (&optional stream)
   (let ((message (read-message stream)))
     (typecase message
-      (request-code `(,message nil))
+      (request-code `(,message 0))
       (request-message message)
       (t (error 'invalid-request-message :message message)))))
 
@@ -321,8 +325,8 @@ define a little helper function for that.
 
 @t@l
 (deftest read-request
-  (values (equal (read-request-from-string ":foo") '(:foo nil))
-          (equal (read-request-from-string "(:foo nil)") '(:foo nil))
+  (values (equal (read-request-from-string ":foo") '(:foo 0))
+          (equal (read-request-from-string "(:foo 0)") '(:foo 0))
           (handler-case (read-request-from-string "(:ok)")
             (invalid-request-message () t)))
   t t t)
