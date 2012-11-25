@@ -331,7 +331,6 @@ define a little helper function for that.
             (invalid-request-message () t)))
   t t t)
 
-
 @ Sending messages is simple: we just print the character representation
 to standard output, followed by a newline (for aesthetic purposes only).
 
