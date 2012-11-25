@@ -26,6 +26,7 @@ be simple enough to port to other implementations.
 @e
 (defpackage "SLUDGE"
   (:use "COMMON-LISP" "SB-BSD-SOCKETS" "SB-THREAD")
+  (:import-from "SB-INTROSPECT" "FUNCTION-LAMBDA-LIST")
   (:import-from "SB-POSIX" "UMASK")
   (:export))
 @e
@@ -341,22 +342,11 @@ to standard output, followed by a newline (for aesthetic purposes only).
     (write-string (format nil "~S~%" message))
     (finish-output)))
 
-@ Our request handlers will be methods of the generic function
-|handle-request|, specialized on request codes. To simplify things a bit,
-we'll use an around~method that sends whatever message the applicable
-primary method returns. If a method returns |nil|, nothing is sent to
-the client.
+@ Request handlers are methods of the generic function |handle-request|,
+specialized on request codes.
 
 @l
 (defgeneric handle-request (code tag &rest args))
-
-(defmethod handle-request :around (code tag &rest args)
-  (declare (ignore code args))
-  (let ((response (call-next-method)))
-    (when response
-      (assert (eql (response-tag response) tag) (response tag)
-              "Message tag in response does not match request.")
-      (send-message response))))
 
 @ The default handler just signals an error.
 
@@ -364,37 +354,35 @@ the client.
 (defmethod handle-request (code tag &rest args)
   (error 'invalid-request-message :message `(,code ,tag ,@args)))
 
-@ Here's a minimal request handler. It returns |nil|, so no response will
-be sent.
+@ Request handlers tend to follow a similar pattern, so we'll use a
+defining macro that abstracts it a bit. The request arguments are bound
+using |destructuring-bind| to the parameters specified by |lambda-list|,
+and the body should return a list of response arguments, from which a
+response message will be constructed and sent. We'll leave it up to the
+main loop to handle any errors by constructing and sending error responses.
 
 @l
-(defmethod handle-request ((code (eql :nop)) tag &rest args)
-  (declare (ignore tag args)))
+(defmacro define-request-handler (request-code lambda-list &body body)
+  (let ((code (make-symbol "CODE"))
+        (tag (make-symbol "TAG"))
+        (args (make-symbol "ARGS")))
+   `(defmethod handle-request ((,code (eql ,request-code)) ,tag &rest ,args)
+      (declare (optimize safety))
+      (destructuring-bind ,lambda-list ,args
+        (send-message (apply #'make-response-message :ok ,code ,tag
+                             (progn ,@body)))))))
 
-@ Here's a slightly more interesting request. It echoes its arguments.
-
-@l
-(defmethod handle-request ((code (eql :ping)) tag &rest args)
-  (apply #'make-response-message :ok code tag args))
-
-@ We'll use the full power of Common Lisp's lambda list to parse request
-messages. The safety declaration is to ensure that |destructuring-bind|
-signals an error if the request does not match the destructuring pattern.
-
-@l
-(defmacro destructure-request (lambda-list request &body body)
-  `(destructuring-bind ,lambda-list ,request
-     (declare (optimize safety))
-     ,@body))
-
-@ Here's the reason this whole system exists: the |:arglist| request returns
-the lambda list of the indicated function.
+@ Here's a minimal request handler: it simply echoes its arguments.
 
 @l
-(defmethod handle-request ((code (eql :arglist)) tag &rest args)
-  (destructure-request (function) args
-    (let ((arglist (sb-introspect:function-lambda-list function)))
-      (make-response-message :ok code tag function arglist))))
+(define-request-handler :echo (&rest args) args)
+
+@ And here's the main reason this whole system exists: the |:arglist|
+request returns the lambda list of the indicated function.
+
+@l
+(define-request-handler :arglist (function)
+  (list function (function-lambda-list function)))
 
 @ @l
 (defun sludge-loop ()
@@ -410,7 +398,7 @@ the lambda list of the indicated function.
       (with-simple-restart (continue "Ignore this request.")
         (let ((request (handler-case (read-request)
                          (end-of-file () (return)))))
-          (destructure-request (code tag &rest args) request
+          (destructuring-bind (code tag &rest args) request
             (handler-case (apply #'handle-request code tag args)
               (error (condition)
                 (send-message
