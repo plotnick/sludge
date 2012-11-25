@@ -131,9 +131,10 @@ See \man listen(2) for more information.
 @ Once a socket is bound and listening, it is ready to accept connections.
 As soon as we accept a connection, we'll enter the main server loop, which
 is implemented by a function of no arguments that reads messages from
-standard input and responds on standard output. Error output is {\it not\/}
-rebound, so that server loops have a stream on which to write error messages
-that might reach the user directly.
+standard input and responds on standard output. (We'll define our server
+loop later; these are just the functions that invoke it.) Error output is
+{\it not\/} rebound, so that server loop has a stream on which to write
+error messages that might reach the user directly.
 
 By default, we'll spawn a new thread for each server loop so that it can
 operate in the background. During debugging, however, it can be useful to
@@ -141,15 +142,6 @@ run the server loop in the foreground, so we'll support a |spawn| keyword
 argument which can be used to override the default behavior.
 
 @l
-(defun server-accept (socket server-loop &key (spawn t) (verbose nil))
-  (let ((client (socket-accept socket)))
-    (when verbose
-      (format t "Accepted connection on ~A~@[ from client ~A~].~%"
-              (socket-name socket) (socket-peername client)))
-    (if spawn
-        (make-thread 'serve-client :arguments (list client server-loop))
-        (serve-client client server-loop))))
-
 (defun serve-client (client server-loop &key (external-format :default))
   (unwind-protect
        (let* ((stream (socket-make-stream client
@@ -160,6 +152,15 @@ argument which can be used to override the default behavior.
               (*standard-output* stream))
          (funcall server-loop))
     (socket-close client)))
+
+(defun server-accept (socket server-loop &key (spawn t) (verbose nil))
+  (let ((client (socket-accept socket)))
+    (when verbose
+      (format t "Accepted connection on ~A~@[ from client ~A~].~%"
+              (socket-name socket) (socket-peername client)))
+    (if spawn
+        (make-thread 'serve-client :arguments (list client server-loop))
+        (serve-client client server-loop))))
 
 @t Here's a teeny-tiny little top-level \repl, just for testing the server.
 Most of this implementation was cribbed from SBCL's \repl.
