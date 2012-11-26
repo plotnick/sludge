@@ -69,6 +69,7 @@ lists of the form |(address port)|, while Unix domain socket addresses
 are denoted by pathnames.
 
 @l
+@<Define server logging facility@>
 @<Define |with-umask| macro@>
 
 (defgeneric server-listen (address &key)
@@ -79,9 +80,9 @@ are denoted by pathnames.
         (socket-bind socket (namestring address)))
       socket))
   (:method ((address vector) &key (port *default-port*))
-    (server-listen (list address port)))
+    (server-listen (list address port) :recursive-p t))
   (:method ((address null) &key (port *default-port*))
-    (server-listen (list *localhost* port)))
+    (server-listen (list *localhost* port) :recursive-p t))
   (:method ((address cons) &key (protocol :tcp))
     (let ((socket (make-instance 'inet-socket ;
                                  :type :stream ;
@@ -89,13 +90,12 @@ are denoted by pathnames.
       (destructuring-bind (address port) address
         (socket-bind socket address port))
       socket))
-  (:method :around (address &key (backlog *default-backlog*) (verbose nil))
+  (:method :around (address &key (backlog *default-backlog*) recursive-p)
     (let ((socket (call-next-method)))
-      (when socket
+      (when (and socket (not recursive-p))
         (socket-listen socket backlog)
-        (when verbose
-          (multiple-value-bind (address port) (socket-name socket)
-            (format t "Server listening on ~A~@[ port ~D~].~%" address port))))
+        (server-log "Server listening on ~{~A~^ port ~D~}.~%"
+                    (multiple-value-list (socket-name socket))))
       socket)))
 
 @ This little macro executes its body with a temporary file creation mode
@@ -129,20 +129,20 @@ See \man listen(2) for more information.
   "Maximum length of pending connections queue.")
 
 @ Once a socket is bound and listening, it is ready to accept connections.
-As soon as we accept a connection, we'll enter the main server loop, which
+As soon as we accept a connection, we'll enter the given \repl, which
 is implemented by a function of no arguments that reads messages from
 standard input and responds on standard output. (We'll define our server
 loop later; these are just the functions that invoke it.) Error output is
-{\it not\/} rebound, so that server loop has a stream on which to write
+{\it not\/} rebound, so that the \repl\ has a stream on which to write
 error messages that might reach the user directly.
 
-By default, we'll spawn a new thread for each server loop so that it can
-operate in the background. During debugging, however, it can be useful to
-run the server loop in the foreground, so we'll support a |spawn| keyword
-argument which can be used to override the default behavior.
+By default, we'll spawn a new thread for each \repl\ so that it can operate
+in the background. During debugging, however, it can be useful to run in
+the foreground, so we'll support a |spawn| keyword argument which can be
+used to override the default behavior.
 
 @l
-(defun serve-client (client server-loop &key (external-format :default))
+(defun serve-client (client repl &key (external-format :default))
   (unwind-protect
        (let* ((stream (socket-make-stream client
                                           :input t :output t
@@ -150,17 +150,60 @@ argument which can be used to override the default behavior.
                                           :external-format external-format))
               (*standard-input* stream)
               (*standard-output* stream))
-         (funcall server-loop))
-    (socket-close client)))
+         (server-log "Entering ~A.~%"
+                     (etypecase repl
+                       (symbol repl)
+                       (function (nth-value 2 ; name
+                                            (function-lambda-expression ;
+                                             repl)))))
+         (funcall repl))
+    (socket-close client)
+    (server-log "Client connection closed.~%")))
 
-(defun server-accept (socket server-loop &key (spawn t) (verbose nil))
+(defun server-accept (socket repl &key (spawn t))
   (let ((client (socket-accept socket)))
-    (when verbose
-      (format t "Accepted connection on ~A~@[ from client ~A~].~%"
-              (socket-name socket) (socket-peername client)))
+    (server-log "Accepted connection on ~{~A~^ port ~D~}~
+                 ~{ from client at ~A~^ port ~D~}.~%"
+                (multiple-value-list (socket-name socket))
+                (multiple-value-list (socket-peername client)))
     (if spawn
-        (make-thread 'serve-client :arguments (list client server-loop))
-        (serve-client client server-loop))))
+        (make-thread 'serve-client :arguments (list client repl))
+        (serve-client client repl))))
+
+(defun server-loop (repl &key address (spawn t) once-only)
+  (let ((server (server-listen address)))
+    (unwind-protect
+         (loop
+           (server-accept server repl :spawn spawn)
+           (when once-only (return)))
+      (socket-close server)
+      (when (pathnamep address)
+        (delete-file address))
+      (server-log "Server socket closed.~%"))))
+
+@ With all that machinery in place, we come now to the primary public
+interface of the whole system: a pair of functions which start and stop,
+respectively, a server loop thread. If the |spawn| argument to |start-server|
+is true, however, the server loop will run in the current thread; this is
+for debugging purposes only. Note that running client threads are currently
+{\it not\/} aborted when the server is stopped; only the server loop itself
+is halted, so no new client connections will be accepted.
+
+The somewhat violent and crude implementation of |stop-server| at least has
+the advantage of simplicity. Less harsh solutions that do not add undue
+complexity would be welcome.
+
+@l
+(defun start-server (&rest args &key (repl 'main-loop) (spawn t) ;
+                     &allow-other-keys)
+  (flet ((server () ;
+           (apply #'server-loop repl :spawn spawn :allow-other-keys t args)))
+    (if spawn
+        (make-thread #'server)
+        (server))))
+
+(defun stop-server (server-thread)
+  (interrupt-thread server-thread #'abort))
 
 @t Here's a teeny-tiny little top-level \repl, just for testing the server.
 Most of this implementation was cribbed from SBCL's \repl.
@@ -178,26 +221,34 @@ Most of this implementation was cribbed from SBCL's \repl.
   (values-list /))
 
 (defun simple-repl (&key (prompt (lambda (stream) (format stream "~&* "))))
-  (loop
-    (with-simple-restart (abort "~@<Return to REPL.~@:>")
-      (funcall prompt *standard-output*)
-      (force-output)
-      (let* ((form (handler-case (read) (end-of-file () (return))))
-             (values (multiple-value-list (toplevel-eval form))))
-        (if values
-            (mapc (lambda (value) (format t "~S~&" value)) values)
-            (fresh-line))))))
+  (with-standard-io-syntax
+    (loop
+      (with-simple-restart (abort "~@<Return to REPL.~@:>")
+        (funcall prompt *standard-output*)
+        (force-output)
+        (let* ((form (handler-case (read) (end-of-file () (return))))
+               (values (multiple-value-list (toplevel-eval form))))
+          (if values
+              (mapc (lambda (value) (format t "~S~&" value)) values)
+              (fresh-line)))))))
 
-(defun serve-repl (&key (address #P"/tmp/repl") (spawn nil) (verbose t))
-  (let ((server (server-listen address :verbose verbose)))
-    (unwind-protect
-         (server-accept server 'simple-repl ;
-                        :spawn spawn ;
-                        :verbose verbose)
-      (socket-close server)
-      (when verbose (format t "Connection closed.~%"))
-      (when (pathnamep address)
-        (delete-file address)))))
+@ What's a server without logging? The server functions above all send
+debugging messages to the stream in |*log-output*| using this function.
+
+@l
+(defun server-log (control-string &rest args)
+  "Send a formatted debugging message to the log output stream."
+  (when *log-output*
+    (apply #'format *log-output* control-string args)
+    (force-output *log-output*)))
+
+@ A few potentially useful values for |*log-output|: |nil|, meaning no
+messages will be logged; a synonym stream for |*terminal-io*|; or~a file
+output stream.
+
+@<Global variables@>=
+(defvar *log-output* nil
+  "A designator for a stream on which to print server debugging messages.")
 
 @ The \sludge\ protocol may be informally specified as follows. Sequences
 of octets (8-bit bytes) are interpreted as representing Unicode characters
