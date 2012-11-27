@@ -27,7 +27,7 @@ be simple enough to port to other implementations.
 (defpackage "SLUDGE"
   (:use "COMMON-LISP" "SB-BSD-SOCKETS" "SB-THREAD")
   (:import-from "SB-INTROSPECT" "FUNCTION-LAMBDA-LIST")
-  (:import-from "SB-POSIX" "UMASK")
+  (:import-from "SB-POSIX" "MKTEMP" "UMASK")
   (:export))
 @e
 (in-package "SLUDGE")
@@ -59,74 +59,186 @@ but we'd like them to appear near the top of the tangled output.
 @<Condition classes@>
 
 @ We'll start with the low-level guts of the server. This implementation
-is specific to the |sb-sockets| module, but should be easily portable to
-any standard {\sc bsd}-style socket {\sc api}.
+is specific to the |sb-bsd-sockets| module, but should be easily portable
+to any standard {\sc bsd}-style socket {\sc api}.
 
-To set up the server, we create a socket, bind it to an address, and listen
-for connections. Both {\sc inet} and Unix domain sockets are supported.
-{\sc inet} addresses are denoted by vectors of |(unsigned-byte 8)| or
-lists of the form |(address port)|, while Unix domain socket addresses
-are denoted by pathnames.
+When we make a socket for the server, we'll bind it to an address and have
+it listen there for connections. The function |make-server-socket| thus
+returns a new socket ready to accept connections, or else signals an error.
+The domain of the constructed socket is determined automatically from the
+type of address given, with slightly hairy defaulting behavior.
 
 @l
-@<Define server logging facility@>
+@<Define server logging routine@>
 @<Define |with-umask| macro@>
 
-(defgeneric server-listen (address &key)
-  (:method ((address pathname) &key (umask #O77))
-    (ignore-errors (delete-file address))
-    (let ((socket (make-instance 'local-socket :type :stream)))
-      (with-umask umask
-        (socket-bind socket (namestring address)))
-      socket))
-  (:method ((address vector) &key (port *default-port*))
-    (server-listen (list address port) :recursive-p t))
-  (:method ((address null) &key (port *default-port*))
-    (server-listen (list *localhost* port) :recursive-p t))
-  (:method ((address cons) &key (protocol :tcp))
-    (let ((socket (make-instance 'inet-socket ;
-                                 :type :stream ;
-                                 :protocol protocol)))
-      (destructuring-bind (address port) address
-        (socket-bind socket address port))
-      socket))
-  (:method :around (address &key (backlog *default-backlog*) recursive-p)
-    (let ((socket (call-next-method)))
-      (when (and socket (not recursive-p))
-        (socket-listen socket backlog)
-        (server-log "Server listening on ~{~A~^ port ~D~}.~%"
-                    (multiple-value-list (socket-name socket))))
-      socket)))
+(deftype inet-addr () '(or (simple-vector 4) (vector (unsigned-byte 8) 4)))
+(deftype inet-sock-addr () '(cons inet-addr (cons integer null)))
 
-@ This little macro executes its body with a temporary file creation mode
-mask; see \man umask(2). We use it to lock down permissions on a Unix domain
-socket.
+(defun make-server-socket (address &key (backlog *default-backlog*)
+                           (port *default-port*) ;
+                           (protocol :tcp) ;
+                           (umask #O77) &aux
+                           (address @<Resolve |address|...@>))
+  (let ((socket (etypecase address
+                  (inet-sock-addr (make-instance 'inet-socket ;
+                                                 :type :stream ;
+                                                 :protocol protocol))
+                  (pathname (make-instance 'local-socket :type :stream)))))
+    @<Bind |socket| to |address| and listen for connections@>
+    (assert (socket-open-p socket))
+    (server-log "Server listening on ~{~A~^ port ~D~}.~%"
+                (multiple-value-list (socket-name socket)))
+    socket))
 
-@<Define |with-umask|...@>=
+@ In SBCL's socket library, local (Unix) domain socket addresses are
+represented by namestrings, and {\sc inet} domain socket addresses are
+represented by lists of the form |(ipv4-address port)|. In an effort
+to be both slightly more accommodating to the user and more Lisp-like,
+we accept a slightly different set of socket address designators, which
+are easier to express in Lisp than prose. Note the defaulting for address
+and port, and that strings are ambiguous: we first try to parse them as
+dotted-quads, and only if that fails do we treat them as namestrings.
+
+@<Resolve |address| as a socket address designator@>=
+(etypecase address
+  (null (list *localhost* port))
+  (inet-addr (list address port))
+  (inet-sock-addr address)
+  (pathname address)
+  (string (or (ignore-errors (list (make-inet-address address) port))
+              (pathname address))))
+
+@t We'll test both namestrings and pathnames as designators for local
+domain socket addresses. We assume that {\tt /tmp} is an acceptable place
+to put temporary socket files.
+
+@l
+(defun make-temp-socket-name ()
+  (mktemp (make-pathname :name "socket"
+                         :type "XXXXXX"
+                         :directory '(:absolute "tmp"))))
+
+(defmacro with-open-server-socket ((socket address &optional args) &body body)
+  `(let ((,socket (apply #'make-server-socket ,address ,args)))
+     (unwind-protect (progn ,@body)
+       (socket-close ,socket))))
+
+(defun test-make-local-server-socket (address)
+  (with-open-server-socket (socket address)
+    (unwind-protect
+         (and (socket-open-p socket)
+              (string= (socket-name socket) (namestring address))
+              (probe-file address)
+              t)
+      (delete-file address))))
+
+(deftest (make-server-socket local)
+  (values (test-make-local-server-socket (make-temp-socket-name))
+          (test-make-local-server-socket (pathname (make-temp-socket-name))))
+  t t)
+
+@t We have three kinds of address specifications to test for {\sc inet}
+sockets: dotted quads, host \& port, and~(\<host> \<port>). We also verify
+that an attempt to bind to the same socket address while a socket is still
+open signals an address-in-use error.
+
+We assume that |*default-port*| on the local host is available for binding.
+
+@l
+(defun test-make-inet-server-socket (address &rest args)
+  (with-open-server-socket (socket address args)
+    (and (socket-open-p socket)
+         (typep (multiple-value-list (socket-name socket)) 'inet-sock-addr)
+         (handler-case
+             (apply #'make-server-socket address args)
+           (address-in-use-error () t)))))
+
+(deftest (make-server-socket inet)
+  (values (test-make-inet-server-socket "127.0.0.1")
+          (test-make-inet-server-socket *localhost* :port *default-port*)
+          (test-make-inet-server-socket (list *localhost* *default-port*)))
+  t t t)
+
+@ If we're binding to an {\sc inet} socket, we'll use the loopback address
+and a pseudo-random (but fixed) unprivledged port as defaults.
+
+@<Global variables@>=
+(defparameter *localhost* #(127 0 0 1)
+  "The loopback address.")
+
+(defparameter *default-port* 31415
+  "Default port on which to listen for connections.")
+
+@ The |backlog| parameter to |socket-listen| controls the maximum queue
+length for new connections: if there are more than this many outstanding
+connection requests, new connection attemps will be refused. See \man
+listen(2) for more information. A value of~5 is traditional, and since
+this server is expected to handle only low traffic volume, it should be
+more than sufficient.
+
+@<Global variables@>=
+(defparameter *default-backlog* 5
+  "Maximum length of pending connections queue.")
+
+@ Both binding a socket to an address and attempting to listen on it can
+fail for many reasons. If they do, there's not much that can be usefully
+done with the socket, so we'll offer an |abort| restart that shuts it down
+and returns |nil|.
+
+@<Bind |socket| to |address| and listen for connections@>=
+(restart-case (progn
+                @<Bind |socket| to |address|@>
+                (socket-listen socket backlog))
+  (abort ()
+    :report "Abort and close the socket."
+    (socket-close socket)
+    (abort)))
+
+@ When attempting to bind a socket to an address, though, there's the
+possibility of transient failure; e.g., another server might already
+be bound to that address. So we'll provide a |retry| restart to allow
+the user the possibility of correcting the error (e.g., shutting down
+the other server).
+
+When binding to a local domain socket, we'll first remove any file that
+already exists at that address, then lock down permissions on the socket
+file that we create by temporarily changing the file creation mode mask;
+see \man umask(2).
+
+@<Bind |socket| to |address|@>=
+(tagbody
+ bind
+  (restart-case
+      (etypecase address
+        (inet-sock-addr (apply #'socket-bind socket address))
+        (pathname (ignore-errors (delete-file address))
+                  (with-umask umask
+                    (socket-bind socket (namestring address)))))
+    (retry ()
+      :report "Retry binding the socket."
+      (go bind))))
+
+@t@l
+(deftest (make-server-socket retry)
+  (let ((a (make-server-socket nil)))
+    (when (socket-open-p a)
+      (let ((b (handler-bind ((address-in-use-error
+                               (lambda (condition)
+                                 (declare (ignore condition))
+                                 (socket-close a)
+                                 (invoke-restart 'retry))))
+                 (make-server-socket nil))))
+        (unwind-protect (socket-open-p b)
+          (socket-close b)))))
+  t)
+
+@ @<Define |with-umask|...@>=
 (defmacro with-umask (umask &body body)
   (let ((old-umask (make-symbol "OLD-UMASK")))
     `(let ((,old-umask (umask ,umask)))
        (unwind-protect (progn ,@body)
          (umask ,old-umask)))))
-
-@ If we're binding to an {\sc inet} socket, we'll use the loopback address
-and an unprivledged port by default.
-
-@<Global variables@>=
-(defparameter *default-port* 31415
-  "Default INET port on which to listen for connections.")
-
-(defparameter *localhost* #(127 0 0 1)
-  "The loopback address.")
-
-@ The |backlog| parameter to |socket-listen| controls the maximum queue
-length for new connections: if there are more than this many outstanding
-connection requests, new connection attemps will be refused.
-See \man listen(2) for more information.
-
-@<Global variables@>=
-(defparameter *default-backlog* 10
-  "Maximum length of pending connections queue.")
 
 @ Once a socket is bound and listening, it is ready to accept connections.
 As soon as we accept a connection, we'll enter the given \repl, which
@@ -170,18 +282,17 @@ used to override the default behavior.
         (make-thread 'serve-client :arguments (list client repl))
         (serve-client client repl))))
 
-(defun server-loop (repl &key address (spawn t) once-only)
-  (let ((server (server-listen address)))
-    (unwind-protect
-         (loop
-           (server-accept server repl :spawn spawn)
-           (when once-only (return)))
-      (socket-close server)
-      (when (pathnamep address)
-        (delete-file address))
-      (server-log "Server socket closed.~%"))))
+(defun server-loop (server repl &key (spawn t) once-only)
+  (unwind-protect
+       (loop
+         (server-accept server repl :spawn spawn)
+         (when once-only (return)))
+    (when (typep server 'local-socket)
+      (delete-file (socket-name server)))
+    (socket-close server)
+    (server-log "Server socket closed.~%")))
 
-@ With all that machinery in place, we come now to the primary public
+@ With the above machinery in place, we come now to the primary public
 interface of the whole system: a pair of functions which start and stop,
 respectively, a server loop thread. If the |spawn| argument to |start-server|
 is true, however, the server loop will run in the current thread; this is
@@ -189,19 +300,21 @@ for debugging purposes only. Note that running client threads are currently
 {\it not\/} aborted when the server is stopped; only the server loop itself
 is halted, so no new client connections will be accepted.
 
-The somewhat violent and crude implementation of |stop-server| at least has
-the advantage of simplicity. Less harsh solutions that do not add undue
+@l
+(defun start-server (&rest args &key address (repl 'main-loop) (spawn t) ;
+                     once-only &allow-other-keys)
+  (let ((server (apply #'make-server-socket address :allow-other-keys t args)))
+    (flet ((serve ()
+             (server-loop server repl :spawn spawn :once-only once-only)))
+      (if spawn
+          (make-thread #'serve)
+          (serve)))))
+
+@ This somewhat violent and crude implementation of |stop-server| at least
+has the advantage of simplicity. Less harsh solutions that do not add undue
 complexity would be welcome.
 
 @l
-(defun start-server (&rest args &key (repl 'main-loop) (spawn t) ;
-                     &allow-other-keys)
-  (flet ((server () ;
-           (apply #'server-loop repl :spawn spawn :allow-other-keys t args)))
-    (if spawn
-        (make-thread #'server)
-        (server))))
-
 (defun stop-server (server-thread)
   (interrupt-thread server-thread #'abort))
 
@@ -235,7 +348,7 @@ Most of this implementation was cribbed from SBCL's \repl.
 @ What's a server without logging? The server functions above all send
 debugging messages to the stream in |*log-output*| using this function.
 
-@l
+@<Define server logging routine@>=
 (defun server-log (control-string &rest args)
   "Send a formatted debugging message to the log output stream."
   (when *log-output*
