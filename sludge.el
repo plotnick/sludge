@@ -72,13 +72,14 @@
 
 (defun sludge-request (proc code &rest args)
   "Make a synchronous request to the SLUDGE server at PROC."
-  (catch 'ok
+  (catch 'done
     (sludge-async-request proc code args
-                          (lambda (&rest args) (throw 'ok args)))
+                          (lambda (&rest args) (throw 'done args))
+                          (lambda (&rest args) (throw 'done nil)))
     (let ((debug-on-quit t)
           (inhibit-quit nil))
       (while (process-live-p proc)
-        (accept-process-output proc)))))
+        (accept-process-output proc 0.01)))))
 
 (defun sludge-process-reply (proc string)
   "The SLUDGE process filter function.
@@ -100,18 +101,18 @@ Reads a response from the Lisp and handles it."
 (defun sludge-documentation-function ()
   "Return a documentation string for the symbol at or around point.
 Intended to be used as a value for `eldoc-documentation-function'."
-  (let ((symbol (symbol-at-point)))
+  (let ((symbol (lisp-fn-called-at-pt)))
     (when symbol
-      (ignore-errors
-        (apply #'make-arglist-doc-string
-               (sludge-request sludge :arglist symbol))))))
+      (let ((arglist (ignore-errors (sludge-request sludge :arglist symbol))))
+        (when arglist
+          (make-arglist-doc-string symbol arglist))))))
 
 (defun make-arglist-doc-string (fn arglist)
   (format "%s: %S" fn arglist))
 
 (defun sludge-arglist (&optional symbol)
   (sludge-async-request sludge
-                        :arglist (list (or symbol (symbol-at-point)))
+                        :arglist (list (or symbol (lisp-fn-called-at-pt)))
                         (lambda (symbol arglist)
                           (message "%s: %S" symbol arglist))
                         #'ignore))
