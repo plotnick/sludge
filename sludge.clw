@@ -24,6 +24,10 @@ be simple enough to port to other implementations.
 @l
 (provide "SLUDGE")
 @e
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require "SB-BSD-SOCKETS")
+  (require "SB-POSIX"))
+@e
 (defpackage "SLUDGE"
   (:use "COMMON-LISP" "SB-BSD-SOCKETS" "SB-THREAD")
   (:import-from "SB-INTROSPECT" "FUNCTION-LAMBDA-LIST")
