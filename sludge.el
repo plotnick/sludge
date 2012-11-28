@@ -24,14 +24,14 @@
 
 ;;; In the SLUDGE protocol, we send requests from Emacs to the Lisp server,
 ;;; and possibly receive responses to those requests. Requests are tagged
-;;; with arbitrary, client-generated identifiers; we'll use monotonically
-;;; increasing integers. We'll keep our pending requests in a hash table,
-;;; keyed on request codes, with values of the form (TAG OK ERR). If a
-;;; response comes in with a tag less than the one in the current entry,
-;;; it is ignored; otherwise, we invoke either OK or ERR with the arguments
+;;; with client-generated integer identifiers. We'll keep our pending
+;;; requests in a hash table, keyed on request codes, with values of the
+;;; form (TAG OK ERR). If a response comes in with a tag less than TAG,
+;;; we ignore it; otherwise, we invoke either OK or ERR with the arguments
 ;;; from the response message.
 
 (defvar sludge-pending-requests (make-hash-table))
+(defvar sludge-tag-counter 0)
 
 (defun sludge-clear-pending-requests ()
   (clrhash sludge-pending-requests))
@@ -61,8 +61,6 @@
                         (apply err args))
                  (remhash request-code sludge-pending-requests)))
               (t (error "Unexpected tag in response: %s" response)))))))
-
-(defvar sludge-tag-counter 0)
 
 (defun sludge-send-request (proc request)
   (process-send-string proc (format "%S\n" request)))
