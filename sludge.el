@@ -1,3 +1,6 @@
+(defvar sludge nil
+  "Global SLUDGE process.")
+
 (defun sludge-connect (address &optional coding)
   (let ((proc (make-network-process :name "sludge"
                                     :family 'local
@@ -6,7 +9,7 @@
                                     :service address
                                     :coding (or coding 'utf-8-unix))))
     (set-process-filter proc 'sludge-process-reply)
-    proc))
+    (setq sludge proc)))
 
 ;;; These must match the definitions on the server side, or else there will
 ;;; be much wailing and gnashing of teeth.
