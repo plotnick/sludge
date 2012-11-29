@@ -459,30 +459,87 @@ looks like a request message.
           (typep '(:foo :foo 0 t nil t) 'response-message))
   t nil nil)
 
-@ We use the Lisp reader to pull messages off the wire.
+@ Sending messages is simple: we just print the character representation
+to standard output, followed by a newline (for aesthetic purposes only).
 
 @l
-(defun read-message (&optional stream)
-  (read stream))
+(defun send-message (message)
+  (let ((*print-case* :downcase)
+        (*print-readably* t))
+    (write-string (format nil "~S~%" message))
+    (finish-output)))
 
-@ On the server side, we'll only ever read request messages. This function
-reads one request off the wire and verifies the basic structure of the
-message.
+@ Here's a little convenience method for sending error messages.
 
 @l
-(defun read-request (&optional stream)
-  (let ((message (read-message stream)))
-    (typecase message
-      (request-code `(,message 0))
-      (request-message message)
-      (t (error 'invalid-request-message :message message)))))
+(defun send-error-message (code tag condition)
+  (send-message
+   (make-response-message :error code tag
+                          (type-of condition)
+                          (princ-to-string condition))))
 
-@ @<Condition classes@>=
-(define-condition invalid-request-message (error)
-  ((message :reader invalid-request-message :initarg :message))
+@ To pull a request off the wire, we'll use the Lisp reader, but in a very
+careful way. We start by collecting the characters that comprise the
+message using the Lisp reader with |*read-suppress*| bound to true; that
+should catch the most basix syntax errors. Then we'll peek at the first
+character so we can handle the abbreviated request syntax described above.
+If it's a fully parenthesized message, we try to read the code and tag of
+the message---if we can't get those, then we can't even send a proper error
+response---followed by the arguments.
+
+This routine will signal errors if it detects any abnormalities in the
+syntax of the message; it is expected that higher-level routines will
+establish handlers that can cope with such errors in a sensible way (e.g.,
+by ignoring the whole message).
+
+@l
+(defun read-request (&optional (stream *standard-input*))
+  (with-input-from-string ;
+      (*standard-input* @<Collect the characters that comprise this message@>)
+    (macrolet ((read-typed-object (type)
+                 (let ((object (gensym)))
+                   `(let ((,object (read)))
+                      (check-type ,object ,type)
+                      ,object))))
+      (let ((c (peek-char t)))
+        (case c
+          (#\: (list (read-typed-object request-code) 0))
+          (#\( (read-char)
+               (let* ((code (read-typed-object request-code))
+                      (tag (read-typed-object tag))
+                      (args @<Try to read arguments until closing paren@>))
+                 (list* code tag args))))))))
+
+@ @<Collect the characters...@>=
+(with-output-to-string (string-stream)
+  (let ((*standard-input* (make-echo-stream (or stream *standard-input*) ;
+                                            string-stream))
+        (*read-suppress* t))
+    (read)))
+
+@ Arguments are read one at at a time until we see the closing delimiter.
+If an error is signaled while attempting to read an argument, we'll send
+back an error response, but nevertheless decline to handle the condition.
+
+@<Try to read arguments...@>=
+(loop until (char= (peek-char t) #\))
+      collect (handler-bind ;
+                  ((reader-error (lambda (condition)
+                                   (send-error-message code tag condition))))
+                (read)))
+
+@ SBCL's reporting functions for reader errors can themselves signal
+errors, even for offences as minor as attempting to report an error about
+a stream that has since been closed. Whence the careful error handling
+in our own report function, which implicitly relies on theirs.
+
+@<Condition classes@>=
+(define-condition unreadable-object (error)
+  ((error :reader unreadable-object-error :initarg :error))
   (:report (lambda (condition stream)
-             (format stream "Malformed request ~S."
-                     (invalid-request-message condition)))))
+             (or (ignore-errors
+                   (princ (unreadable-object-error condition) stream))
+                 (format stream "Error attempting to read object.")))))
 
 @t We'll frequently read requests from strings during tests, so we'll
 define a little helper function for that.
@@ -496,19 +553,8 @@ define a little helper function for that.
 (deftest read-request
   (values (equal (read-request-from-string ":foo") '(:foo 0))
           (equal (read-request-from-string "(:foo 0)") '(:foo 0))
-          (handler-case (read-request-from-string "(:ok)")
-            (invalid-request-message () t)))
+          (null (read-request-from-string "<invalid>")))
   t t t)
-
-@ Sending messages is simple: we just print the character representation
-to standard output, followed by a newline (for aesthetic purposes only).
-
-@l
-(defun send-message (message)
-  (let ((*print-case* :downcase)
-        (*print-readably* t))
-    (write-string (format nil "~S~%" message))
-    (finish-output)))
 
 @ Request handlers are methods of the generic function |handle-request|,
 specialized on request codes.
@@ -521,6 +567,13 @@ specialized on request codes.
 @l
 (defmethod handle-request (code tag &rest args)
   (error 'invalid-request-message :message `(,code ,tag ,@args)))
+
+@ @<Condition classes@>=
+(define-condition invalid-request-message (error)
+  ((message :reader invalid-request-message :initarg :message))
+  (:report (lambda (condition stream)
+             (format stream "Invalid request ~S."
+                     (invalid-request-message condition)))))
 
 @ Request handlers tend to follow a similar pattern, so we'll use a
 defining macro that abstracts it a bit. The request arguments are bound
@@ -568,11 +621,9 @@ proper. Our main loop for the \sludge\ server reads a request, calls
 |handle-request|, then loops. If \eof\ is encountered during the read, we
 exit the loop. If an error occurs during request handling, we send an error
 response and continue processing with the next message. If the client
-signals their desire to disconnect, we acknowledge the request and exit the
-loop. We also establish a |continue| restart which ignores any malformed
-request; this is useful for interactive debugging, but can also be used as
-a target for |invoke-restart| if the user is not available (e.g., if we're
-running in a background thread).
+signals their desire to disconnect, we acknowledge the request and exit
+the loop. We also establish a |continue| restart which simply ignores the
+current request and picks up with the next one.
 
 @l
 (defun main-loop ()
@@ -582,6 +633,9 @@ running in a background thread).
     (loop
       (with-simple-restart (continue "Ignore this request.")
         (let ((request (handler-case (read-request)
+                         (reader-error () (continue))
+                         (type-error () (continue))
+                         (invalid-request-message () (continue))
                          (end-of-file () (return)))))
           (destructuring-bind (code tag &rest args) request
             (handler-case (apply #'handle-request code tag args)
@@ -591,10 +645,7 @@ running in a background thread).
                         (client-disconnect-args condition)))
                 (return))
               (error (condition)
-                (send-message ;
-                 (make-response-message :error code tag
-                                        (type-of condition)
-                                        (princ-to-string condition)))))))))))
+                (send-error-message code tag condition)))))))))
 
 @ If the variable |*message-log*| is set to an output stream, we'll arrange
 for everything read from standard input and written to standard output to
