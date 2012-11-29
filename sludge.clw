@@ -245,12 +245,11 @@ see \man umask(2).
          (umask ,old-umask)))))
 
 @ Once a socket is bound and listening, it is ready to accept connections.
-As soon as we accept a connection, we'll enter the given \repl, which
-is implemented by a function of no arguments that reads messages from
-standard input and responds on standard output. (We'll define our server
-loop later; these are just the functions that invoke it.) Error output is
-{\it not\/} rebound, so that the \repl\ has a stream on which to write
-error messages that might reach the user directly.
+As soon as we accept a connection, we'll enter what we call, for lack of
+a better term, a \repl: a loop, implemented as a function of no arguments,
+that reads messages from standard input and responds on standard output.
+Error output is {\it not\/} rebound, so that the \repl\ has a stream on
+which to write error messages that might reach the user directly.
 
 By default, we'll spawn a new thread for each \repl\ so that it can operate
 in the background. During debugging, however, it can be useful to run in
