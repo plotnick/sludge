@@ -122,3 +122,14 @@ Intended to be used as a value for `eldoc-documentation-function'."
 
 (defun make-arglist-string (fn arglist)
   (format "%S" (cons fn arglist)))
+
+;;;; Package handler.
+
+(defun sludge-package-hook ()
+  (when (boundp 'package)
+    (sludge-async-request sludge
+                          :in-package (list package)
+                          (lambda (name)
+                            (eldoc-message "Current package: %s" name))
+                          (lambda (condition message)
+                            (message message)))))

@@ -1,3 +1,4 @@
+% -*- mode: CLWEB; package: SLUDGE; -*-
 \font\sc=cmcsc10
 \def\<#1>{\leavevmode\hbox{$\mkern-2mu\langle${\it #1\/}$\rangle$}}
 \def\etc.{{\it \char`&c.\spacefactor1000}}
@@ -578,20 +579,25 @@ specialized on request codes.
 @ Request handlers tend to follow a similar pattern, so we'll use a
 defining macro that abstracts it a bit. The request arguments are bound
 using |destructuring-bind| to the parameters specified by |lambda-list|,
-and the body should return a list of response arguments, from which a
-response message will be constructed and sent. We'll leave it up to the
-main loop to handle any errors by constructing and sending error responses.
+and the body should return a designator for a list of response arguments,
+from which a response message will be constructed and sent. We'll leave
+it up to the main loop to handle any errors by constructing and sending
+error responses.
 
 @l
 (defmacro define-request-handler (request-code lambda-list &body body)
   (let ((code (make-symbol "CODE"))
         (tag (make-symbol "TAG"))
-        (args (make-symbol "ARGS")))
+        (args (make-symbol "ARGS"))
+        (response-args (make-symbol "RESPONSE-ARGS")))
    `(defmethod handle-request ((,code (eql ,request-code)) ,tag &rest ,args)
       (declare (optimize safety))
       (destructuring-bind ,lambda-list ,args
-        (send-message (apply #'make-response-message :ok ,code ,tag
-                             (progn ,@body)))))))
+        (let ((,response-args (progn ,@body)))
+          (send-message (apply #'make-response-message :ok ,code ,tag
+                               (if (listp ,response-args)
+                                   ,response-args
+                                   (list ,response-args)))))))))
 
 @ Here's a minimal request handler: it simply echoes its arguments.
 
@@ -604,6 +610,26 @@ request returns the lambda list of the indicated function.
 @l
 (define-request-handler :arglist (function)
   (list function (function-lambda-list function)))
+
+@ This next command allows the client to set the current package. In order
+to correctly obtain information about objects named by non-package-prefixed
+symbols, the current package must match the implicit package of the given
+symbol.
+
+@l
+(define-request-handler :in-package (name)
+  (let ((package (find-package name)))
+    (if package
+        (progn (setq *package* package)
+               (package-name package))
+        (error 'no-such-package-error :package name))))
+
+@ @<Condition classes@>=
+(define-condition no-such-package-error (package-error)
+  ()
+  (:report (lambda (condition stream)
+             (format stream "No such package: ~A" ;
+                     (package-error-package condition)))))
 
 @ Clients are free to just disconnect when they're done, but they might
 prefer to be polite about it and ask that the connection be terminated.
