@@ -98,21 +98,27 @@ Reads a response from the Lisp and handles it."
 ;;; This is the whole reason this system exists. To avoid reinventing the
 ;;; wheel yet again, we'll hook into ElDoc and use its arglist display code.
 
+(defvar sludge-last-arglist nil
+  "A one-element cache for function arglists.")
+
 (defun sludge-documentation-function ()
-  "Return a documentation string for the symbol at or around point.
+  "Display a documentation string for the function at or around point.
 Intended to be used as a value for `eldoc-documentation-function'."
   (let ((symbol (lisp-fn-called-at-pt)))
     (when symbol
-      (let ((arglist (ignore-errors (sludge-request sludge :arglist symbol))))
-        (when arglist
-          (make-arglist-doc-string symbol arglist))))))
-
-(defun make-arglist-doc-string (fn arglist)
-  (format "%s: %S" fn arglist))
+      (if (eq symbol (car sludge-last-arglist))
+          (when (cdr sludge-last-arglist)
+            (eldoc-message (apply #'make-arglist-string sludge-last-arglist)))
+          (sludge-arglist symbol)))))
 
 (defun sludge-arglist (&optional symbol)
+  (setq sludge-last-arglist (list symbol))
   (sludge-async-request sludge
                         :arglist (list (or symbol (lisp-fn-called-at-pt)))
                         (lambda (symbol arglist)
-                          (message "%s: %S" symbol arglist))
+                          (setq sludge-last-arglist (list symbol arglist))
+                          (eldoc-message (make-arglist-string symbol arglist)))
                         #'ignore))
+
+(defun make-arglist-string (fn arglist)
+  (format "%s: %S" fn arglist))
