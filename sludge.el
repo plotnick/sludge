@@ -121,4 +121,4 @@ Intended to be used as a value for `eldoc-documentation-function'."
                         #'ignore))
 
 (defun make-arglist-string (fn arglist)
-  (format "%s: %S" fn arglist))
+  (format "%S" (cons fn arglist)))
