@@ -466,7 +466,7 @@ to standard output, followed by a newline (for aesthetic purposes only).
 @l
 (defun send-message (message)
   (let ((*print-case* :downcase)
-        (*print-readably* t))
+        (*print-pretty* nil))
     (write-string (format nil "~S~%" message))
     (finish-output)))
 
