@@ -1,3 +1,5 @@
+;;; sludge.el --- background Lisp interaction -*- lexical-binding: t -*-
+
 (defvar sludge nil
   "Global SLUDGE process.")
 
@@ -93,6 +95,37 @@ Reads a response from the Lisp and handles it."
            (sludge-handle-response form))
           (t (error "Invalid response from Lisp: %s" form)))))
 
+;;;; Package handling.
+
+;; Adapted from `slime-search-buffer-package'.
+(defun sludge-scry-buffer-package ()
+  (let ((case-fold-search t)
+        (regexp (concat "^(\\(cl:\\|common-lisp:\\)?in-package\\>[ \t']*"
+                        "\\([^)]+\\)[ \t]*)")))
+    (save-excursion
+      (when (or (re-search-backward regexp nil t)
+                (re-search-forward regexp nil t))
+        (let ((match (match-string-no-properties 2)))
+          (when match (ignore-errors (read match))))))))
+
+(defun sludge-get-buffer-package ()
+  "Return and cache the package for the current buffer."
+  (or (ignore-errors (buffer-local-value 'sludge-package (current-buffer)))
+      (ignore-errors (buffer-local-value 'package (current-buffer)))
+      (set (make-local-variable 'sludge-package)
+           (or (sludge-scry-buffer-package)
+               "COMMON-LISP-USER"))))
+
+(defun sludge-in-package (name)
+  (let ((buffer (current-buffer)))
+    (sludge-async-request sludge
+                          :in-package (list name)
+                          (lambda (name)
+                            (with-current-buffer buffer
+                              (set (make-local-variable 'sludge-package) name)))
+                          (lambda (condition message)
+                            (message message)))))
+
 ;;;; Arglist handling.
 
 ;;; This is the whole reason this system exists. To avoid reinventing the
@@ -123,13 +156,3 @@ Intended to be used as a value for `eldoc-documentation-function'."
 (defun make-arglist-string (fn arglist)
   (format "%S" (cons fn arglist)))
 
-;;;; Package handler.
-
-(defun sludge-package-hook ()
-  (when (boundp 'package)
-    (sludge-async-request sludge
-                          :in-package (list package)
-                          (lambda (name)
-                            (eldoc-message "Current package: %s" name))
-                          (lambda (condition message)
-                            (message message)))))
