@@ -1,17 +1,116 @@
 ;;; sludge.el --- background Lisp interaction -*- lexical-binding: t -*-
 
-(defvar sludge nil
-  "Global SLUDGE process.")
+(make-variable-buffer-local
+ (defvar sludge-mode nil
+   "True if SLUDGE mode is enabled."))
 
-(defun sludge-connect (address &optional coding)
-  (let ((proc (make-network-process :name "sludge"
-                                    :family 'local
-                                    :server nil
-                                    :noquery t
-                                    :service address
-                                    :coding (or coding 'utf-8-unix))))
-    (set-process-filter proc 'sludge-process-reply)
-    (setq sludge proc)))
+(make-variable-buffer-local
+ (defvar sludge-process nil
+   "Connection to SLUDGE server."))
+
+(defvar sludge-default-address "/tmp/sludge")
+
+(defvar sludge-poll-rate 0.1)
+(defvar sludge-max-retries 5)
+
+(defun sludge-mode (&optional arg)
+    "Toggle SLUDGE mode.
+The usual minor mode convention applies for the argument: a positive numeric
+argument means enable, negative means disable, and no argument toggles.
+
+When SLUDGE mode is enabled, a connection to a running SLUDGE server will
+be made and used for background interaction with a Common Lisp system."
+  (interactive (list (or current-prefix-arg 'toggle)))
+  (cond ((if (eq arg 'toggle)
+             (not sludge-mode)
+             (> (prefix-numeric-value arg) 0))
+         (condition-case err
+             (setq sludge-process
+                   (sludge-connect
+                    (process-contact
+                     (or (ignore-errors
+                           (with-current-buffer inferior-lisp-buffer
+                             sludge-process))
+                         (sludge-start-server sludge-default-address)))))
+           (error (setq sludge-mode nil)
+                  (signal (car err) (cdr err))))
+         (setq sludge-mode t)
+         (run-hooks 'sludge-mode-hooks)
+         (when (called-interactively-p 'interactive)
+           (message "SLUDGE mode enabled")))
+        (t (when (and sludge-process (process-live-p sludge-process))
+             (delete-process sludge-process))
+           (setq sludge-process nil
+                 sludge-mode nil)
+           (when (called-interactively-p 'interactive)
+             (message "SLUDGE mode disabled"))))
+  (force-mode-line-update)
+  sludge-mode)
+
+(add-minor-mode 'sludge-mode " SLUDGE")
+
+(defun sludge-start-server-command (address)
+  (format "(sludge:start-server :address %S)\n" address))
+
+(defun sludge-stop-server-command ()
+  "(sludge:stop-server)")
+
+(defun sludge-start-server (address)
+  "Start the SLUDGE server in an inferior Lisp and connect to it.
+Sets the inferior Lisp buffer's `sludge-process' variable to the \"master\"
+connection (i.e., the one from which all others will be cloned)."
+  (interactive (list sludge-default-address))
+  (cond (inferior-lisp-buffer
+         (comint-send-string (inferior-lisp-proc)
+                             (sludge-start-server-command address)))
+        (t (error "Can't find Lisp process")))
+  (with-current-buffer inferior-lisp-buffer
+    (setq sludge-process (sludge-try-connect address))))
+
+(defun sludge-stop-server ()
+  "Stop the SLUDGE server and disconnect all clients."
+  (interactive)
+  ;; This should be a protocol message.
+  (cond (inferior-lisp-buffer
+         (comint-send-string (inferior-lisp-proc)
+                             (sludge-stop-server-command)))
+        (t (error "Can't find Lisp process")))
+  (message "SLUDGE server stopped")
+  (with-current-buffer inferior-lisp-buffer
+    (when sludge-process
+      (delete-process sludge-process)
+      (setq sludge-process nil))))
+
+(defun sludge-try-connect (address)
+  "Repeatedly attempt to connect to the SLUDGE server at ADDRESS."
+  (or (catch 'connected
+        (dotimes (i sludge-max-retries)
+          (sit-for sludge-poll-rate)
+          (message "Polling %s" address)
+          (let ((proc (ignore-errors (sludge-connect address))))
+            (when proc
+              (message "Connected to SLUDGE server at %s" address)
+              (throw 'connected proc)))))
+      (error "Timed out connecting to SLUDGE server at %s" address)))
+
+(defun sludge-connect (address)
+  "Connect to the SLUDGE server at ADDRESS."
+  (cond ((and (listp address) (car address))
+         (make-network-process :name "sludge"
+                               :host (car address)
+                               :service (cadr address)
+                               :noquery t
+                               :coding 'utf-8-unix
+                               :filter 'sludge-process-reply))
+        ((or (stringp address)
+             (and (listp address) (setq address (cadr address))))
+         (make-network-process :name "sludge"
+                               :family 'local
+                               :service address
+                               :noquery t
+                               :coding 'utf-8-unix
+                               :filter 'sludge-process-reply))
+        (t (error "Can't connect to SLUDGE server at %s" address))))
 
 ;;; These must match the definitions on the server side, or else there will
 ;;; be much wailing and gnashing of teeth.
@@ -118,7 +217,7 @@ Reads a response from the Lisp and handles it."
 
 (defun sludge-in-package (name)
   (let ((buffer (current-buffer)))
-    (sludge-async-request sludge
+    (sludge-async-request sludge-process
                           :in-package (list name)
                           (lambda (name)
                             (with-current-buffer buffer
@@ -146,7 +245,7 @@ Intended to be used as a value for `eldoc-documentation-function'."
 
 (defun sludge-arglist (&optional symbol)
   (setq sludge-last-arglist (list symbol))
-  (sludge-async-request sludge
+  (sludge-async-request sludge-process
                         :arglist (list (or symbol (lisp-fn-called-at-pt)))
                         (lambda (symbol arglist)
                           (setq sludge-last-arglist (list symbol arglist))
