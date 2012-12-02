@@ -283,7 +283,9 @@ used to override the default behavior.
                 (multiple-value-list (socket-name socket))
                 (multiple-value-list (socket-peername client)))
     (if spawn
-        (make-thread 'serve-client :arguments (list client repl))
+        (make-thread 'serve-client ;
+                     :arguments (list client repl) ;
+                     :name "SLUDGE client")
         (serve-client client repl))))
 
 (defun server-loop (server repl &key (spawn t) once-only)
@@ -311,7 +313,7 @@ is halted, so no new client connections will be accepted.
     (flet ((serve ()
              (server-loop server repl :spawn spawn :once-only once-only)))
       (if spawn
-          (make-thread #'serve)
+          (make-thread #'serve :name "SLUDGE server")
           (serve)))))
 
 @ This somewhat violent and crude implementation of |stop-server| at least
