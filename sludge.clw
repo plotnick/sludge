@@ -33,7 +33,7 @@ be simple enough to port to other implementations.
   (:use "COMMON-LISP" "SB-BSD-SOCKETS" "SB-THREAD")
   (:import-from "SB-INTROSPECT" "FUNCTION-LAMBDA-LIST")
   (:import-from "SB-POSIX" "MKTEMP" "UMASK")
-  (:export))
+  (:export "START-SERVER" "STOP-SERVER"))
 @e
 (in-package "SLUDGE")
 
@@ -313,16 +313,20 @@ is halted, so no new client connections will be accepted.
     (flet ((serve ()
              (server-loop server repl :spawn spawn :once-only once-only)))
       (if spawn
-          (make-thread #'serve :name "SLUDGE server")
+          (setq *server* (make-thread #'serve :name "SLUDGE server"))
           (serve)))))
+
+@ @<Global variables@>=
+(defvar *server* nil
+  "The current SLUDGE server.")
 
 @ This somewhat violent and crude implementation of |stop-server| at least
 has the advantage of simplicity. Less harsh solutions that do not add undue
 complexity would be welcome.
 
 @l
-(defun stop-server (server-thread)
-  (interrupt-thread server-thread #'abort))
+(defun stop-server (&optional (server *server*))
+  (interrupt-thread server #'abort))
 
 @t Here's a teeny-tiny little top-level \repl, just for testing the server.
 Most of this implementation was cribbed from SBCL's \repl.
