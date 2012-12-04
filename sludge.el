@@ -253,12 +253,13 @@ Reads a response from the Lisp and handles it."
 (defun sludge-documentation-function ()
   "Display a documentation string for the function at or around point.
 Intended to be used as a value for `eldoc-documentation-function'."
-  (let ((symbol (lisp-fn-called-at-pt)))
-    (when symbol
-      (if (eq symbol (car sludge-last-arglist))
-          (when (cdr sludge-last-arglist)
-            (eldoc-message (apply #'make-arglist-string sludge-last-arglist)))
-          (sludge-arglist symbol)))))
+  (when sludge-process
+    (let ((symbol (lisp-fn-called-at-pt)))
+      (when symbol
+        (if (eq symbol (car sludge-last-arglist))
+            (when (cdr sludge-last-arglist)
+              (eldoc-message (apply #'make-arglist-string sludge-last-arglist)))
+            (sludge-arglist symbol))))))
 
 (defun sludge-arglist (&optional symbol)
   (setq sludge-last-arglist (list symbol))
