@@ -50,7 +50,10 @@ be made and used for background interaction with a Common Lisp system."
          (when (called-interactively-p 'interactive)
            (message "SLUDGE mode enabled")))
         (t (when (and sludge-process (process-live-p sludge-process))
-             (delete-process sludge-process))
+             (if (and (eq sludge-process (sludge-master-process))
+                      (yes-or-no-p "Shut down SLUDGE server, too? "))
+                 (sludge-stop-server)
+                 (delete-process sludge-process)))
            (setq sludge-process nil
                  sludge-mode nil)
            (when (called-interactively-p 'interactive)
