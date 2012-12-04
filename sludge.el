@@ -1,5 +1,18 @@
 ;;; sludge.el --- background Lisp interaction -*- lexical-binding: t -*-
 
+;;; Commentary:
+
+;; The SLUDGE server runs in a Common Lisp system, which will generally be
+;; running as an inferior-lisp process. To start the system, we (Emacs) tell
+;; the Lisp to start the server and that it should listen at an address that
+;; we provide.
+
+;; Each buffer that wishes to communicate with the server gets its own
+;; connection in the form of a network process object stored in the
+;; buffer-local variable `sludge-process'. The value of that variable in
+;; the inferior lisp buffer is the "master" process, in the sense that
+;; future connections will be made to the same address as that one.
+
 (make-variable-buffer-local
  (defvar sludge-mode nil
    "True if SLUDGE mode is enabled."))
@@ -26,12 +39,10 @@ be made and used for background interaction with a Common Lisp system."
              (> (prefix-numeric-value arg) 0))
          (condition-case err
              (setq sludge-process
-                   (sludge-connect
-                    (process-contact
-                     (or (ignore-errors
-                           (with-current-buffer inferior-lisp-buffer
-                             sludge-process))
-                         (sludge-start-server sludge-default-address)))))
+                   (let ((master (sludge-master-process)))
+                     (if master
+                         (sludge-connect (process-contact master))
+                         (sludge-start-server sludge-default-address))))
            (error (setq sludge-mode nil)
                   (signal (car err) (cdr err))))
          (setq sludge-mode t)
@@ -80,6 +91,9 @@ connection (i.e., the one from which all others will be cloned)."
     (when sludge-process
       (delete-process sludge-process)
       (setq sludge-process nil))))
+
+(defun sludge-master-process ()
+  (ignore-errors (with-current-buffer inferior-lisp-buffer sludge-process)))
 
 (defun sludge-try-connect (address)
   "Repeatedly attempt to connect to the SLUDGE server at ADDRESS."
