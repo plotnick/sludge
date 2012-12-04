@@ -294,7 +294,7 @@ used to override the default behavior.
          (server-accept server repl :spawn spawn)
          (when once-only (return)))
     (when (typep server 'local-socket)
-      (delete-file (socket-name server)))
+      (ignore-errors (delete-file (socket-name server))))
     (socket-close server)
     (server-log "Server socket closed.~%")))
 
