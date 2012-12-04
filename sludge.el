@@ -273,3 +273,8 @@ Intended to be used as a value for `eldoc-documentation-function'."
 (defun make-arglist-string (fn arglist)
   (format "%S" (cons fn arglist)))
 
+(defun sludge-setup-eldoc ()
+  (set (make-local-variable 'eldoc-documentation-function)
+       'sludge-documentation-function))
+
+(add-hook 'sludge-mode-hooks 'sludge-setup-eldoc)
