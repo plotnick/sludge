@@ -270,8 +270,52 @@ Intended to be used as a value for `eldoc-documentation-function'."
                           (eldoc-message (make-arglist-string symbol arglist)))
                         #'ignore))
 
+(defun ensure-string (object)
+  (cond ((stringp object) object)
+        ((symbolp object) (symbol-name object))
+        (t (error "Not a string designator: %S" object))))
+
+(defun parse-cl-symbol (token)
+  "Break the given token up into a package prefix and a symbol name
+and return them as a single cons cell.
+
+Assumes that `:' is the package marker, `\\' is the (unique) single
+escape character, and `|' is the (unique) multiple escape character.
+Makes no attempt to deal with potential numbers or macro characters."
+  (let ((token (ensure-string token))
+        (escaping nil)
+        (marker (cons nil nil))
+        (i 0))
+    (while (< i (length token))
+      (let ((c (aref token i)))
+        (cond ((char-equal c ?\\)
+               (setq i (1+ i)))
+              ((char-equal c ?|)
+               (setq escaping (not escaping)))
+              ((and (not escaping) (char-equal c ?:))
+               (cond ((null (car marker))
+                      (rplaca marker i))
+                     ((and (null (cdr marker)) (= (car marker) (1- i)))
+                      (rplacd marker i))
+                     (t (error "Too many colons in %S" token))))))
+      (setq i (1+ i)))
+    (cond ((null (car marker)) (cons nil token))
+          ((zerop (car marker)) (cons "keyword" token))
+          (t (cons (substring token 0 (car marker))
+                   (substring token (1+ (or (cdr marker) (car marker)))))))))
+
+(defun drop-package-prefix (symbol)
+  "Return just the symbol name, without any package prefix."
+  (condition-case nil
+      (intern (cdr (parse-cl-symbol symbol)))
+    (error symbol)))
+
 (defun make-arglist-string (fn arglist)
-  (format "%S" (cons fn arglist)))
+  (format "%S" (cons fn (mapcar (lambda (obj)
+                                  (if (symbolp obj)
+                                      (drop-package-prefix obj)
+                                      obj))
+                                arglist))))
 
 (defun sludge-setup-eldoc ()
   (set (make-local-variable 'eldoc-documentation-function)
