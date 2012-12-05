@@ -592,6 +592,7 @@ error responses.
 
 @l
 (defmacro define-request-handler (request-code lambda-list &body body)
+  "Define a method on HANDLE-REQUEST, EQL-specialized on REQUEST-CODE."
   (let ((code (make-symbol "CODE"))
         (tag (make-symbol "TAG"))
         (args (make-symbol "ARGS"))
