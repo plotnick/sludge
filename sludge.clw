@@ -617,11 +617,15 @@ request returns the lambda list of the indicated function.
 (define-request-handler :arglist (function)
   (list (function-lambda-list function)))
 
-@ We might want documentation strings as well.
+@ Other pieces of documentation that might be requested are docstrings
+and object descriptions.
 
 @l
 (define-request-handler :documentation (x doc-type)
   (list (documentation x doc-type)))
+
+(define-request-handler :describe (object)
+  (list (with-output-to-string (*standard-output*) (describe object))))
 
 @ This next command allows the client to set the current package. In order
 to correctly obtain information about objects named by non-package-prefixed

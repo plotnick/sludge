@@ -340,7 +340,7 @@ Makes no attempt to deal with potential numbers or macro characters."
 
 (add-hook 'sludge-mode-hooks 'sludge-setup-eldoc)
 
-;;;; Docstring handling.
+;;;; Documentation handling.
 
 (defun sludge-documentation (name doc-type)
   (sludge-async-request sludge-process
@@ -361,3 +361,11 @@ Makes no attempt to deal with potential numbers or macro characters."
 (defun sludge-variable-documentation (&optional var)
   (interactive (lisp-symprompt "Variable documentation" (lisp-var-at-pt)))
   (sludge-documentation (ensure-symbol var) 'variable))
+
+(defun sludge-describe-symbol (&optional symbol)
+  (interactive (lisp-symprompt "Describe" (lisp-var-at-pt)))
+  (sludge-async-request sludge-process
+                        :describe (list (ensure-symbol symbol))
+                        (lambda (description)
+                          (with-output-to-temp-buffer "*describe*"
+                            (princ description)))))
