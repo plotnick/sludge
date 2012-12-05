@@ -671,8 +671,8 @@ current request and picks up with the next one.
 @l
 (defun main-loop ()
   (let ((*read-eval* nil)
-        (*standard-input* @<Maybe echo standard input to the message log@>)
-        (*standard-output* @<Maybe echo standard output to the message log@>))
+        (*standard-input* @<Echo standard input to the message log@>)
+        (*standard-output* @<Echo standard output to the message log@>))
     (loop
       (with-simple-restart (continue "Ignore this request.")
         (let ((request (handler-case (read-request)
@@ -690,24 +690,19 @@ current request and picks up with the next one.
               (error (condition)
                 (send-error-message code tag condition)))))))))
 
-@ If the variable |*message-log*| is set to an output stream, we'll arrange
-for everything read from standard input and written to standard output to
-be echoed to that stream. A synonym stream for |*trace-output*| or an output
-file stream would both be useful values here.
+@ We'll rebind standard input and output to streams that echo to the output
+stream in |*message-log*|. The default is an output stream sink, but if you
+set it to a stream like |*error-output*|, you can watch the protocol traffic.
 
 @<Global variables@>=
-(defvar *message-log* nil
+(defvar *message-log* (make-broadcast-stream)
   "The stream to which SLUDGE messages should be logged.")
 
-@ @<Maybe echo standard input...@>=
-(if (and *message-log* (output-stream-p *message-log*))
-    (make-echo-stream *standard-input* *message-log*)
-    *standard-input*)
+@ @<Echo standard input...@>=
+(make-echo-stream *standard-input* (make-synonym-stream '*message-log*))
 
-@ @<Maybe echo standard output...@>=
-(if (and *message-log* (output-stream-p *message-log*))
-    (make-broadcast-stream *standard-output* *message-log*)
-    *standard-output*)
+@ @<Echo standard output...@>=
+(make-broadcast-stream *standard-output* (make-synonym-stream '*message-log*))
 
 @*Index.
 @t*Index.
