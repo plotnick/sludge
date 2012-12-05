@@ -61,7 +61,16 @@ be made and used for background interaction with a Common Lisp system."
   (force-mode-line-update)
   sludge-mode)
 
-(add-minor-mode 'sludge-mode " SLUDGE")
+(defvar sludge-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map "\C-c\C-a" 'sludge-show-arglist)
+    (define-key map "\C-c\C-f" 'sludge-show-function-documentation)
+    (define-key map "\C-c\C-v" 'sludge-show-variable-documentation)
+    (define-key map "\C-c\C-d" 'sludge-describe-symbol)
+    map)
+  "Keymap for SLUDGE minor mode.")
+
+(add-minor-mode 'sludge-mode " SLUDGE" sludge-mode-map)
 
 (defun sludge-start-server-command (address)
   (format "(sludge:start-server :address %S)\n" address))
