@@ -323,18 +323,36 @@ Makes no attempt to deal with potential numbers or macro characters."
           (t (cons (substring token 0 (car marker))
                    (substring token (1+ (or (cdr marker) (car marker)))))))))
 
+;;; This auxiliary function (shamelessly stolen from CLtL2, Appendix C) is
+;;; like `mapcar' but has two extra purposes: (1) it handles dotted lists;
+;;; (2) it tries to make the result share with the argument X as much as
+;;; possible.
+
+(defun maptree (fn x)
+  (if (atom x)
+      (funcall fn x)
+      (let ((a (funcall fn (car x)))
+            (d (maptree fn (cdr x))))
+        (if (and (eql a (car x)) (eql d (cdr x)))
+            x
+            (cons a d)))))
+
 (defun drop-package-prefix (symbol)
   "Return just the symbol name, without any package prefix."
   (condition-case nil
       (intern (cdr (parse-cl-symbol symbol)))
     (error symbol)))
 
+(defun sludge-pretty-arglist (object)
+  "Recursively drop package prefixes from symbols in the given arglist."
+  (cond ((symbolp object)
+         (drop-package-prefix object))
+        ((listp object)
+         (maptree #'sludge-pretty-arglist object))
+        (t object)))
+
 (defun make-arglist-string (fn arglist)
-  (format "%S" (cons fn (mapcar (lambda (obj)
-                                  (if (symbolp obj)
-                                      (drop-package-prefix obj)
-                                      obj))
-                                arglist))))
+  (format "%S" (cons fn (sludge-pretty-arglist arglist))))
 
 (defun sludge-setup-eldoc ()
   (set (make-local-variable 'eldoc-documentation-function)
