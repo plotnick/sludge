@@ -277,13 +277,14 @@ Intended to be used as a value for `eldoc-documentation-function'."
               (eldoc-message (apply #'make-arglist-string sludge-last-arglist)))
             (sludge-arglist symbol))))))
 
-(defun sludge-arglist (&optional symbol)
-  (setq sludge-last-arglist (list symbol))
+(defun sludge-arglist (&optional fn)
+  (interactive (lisp-symprompt "Function argument list" (lisp-fn-called-at-pt)))
+  (setq sludge-last-arglist (list fn))
   (sludge-async-request sludge-process
-                        :arglist (list (or symbol (lisp-fn-called-at-pt)))
-                        (lambda (symbol arglist)
-                          (setq sludge-last-arglist (list symbol arglist))
-                          (eldoc-message (make-arglist-string symbol arglist)))
+                        :arglist (list fn)
+                        (lambda (arglist)
+                          (setq sludge-last-arglist (list fn arglist))
+                          (eldoc-message (make-arglist-string fn arglist)))
                         #'ignore))
 
 (defun ensure-string (object)

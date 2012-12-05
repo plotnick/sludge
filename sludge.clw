@@ -615,7 +615,7 @@ request returns the lambda list of the indicated function.
 
 @l
 (define-request-handler :arglist (function)
-  (list function (function-lambda-list function)))
+  (list (function-lambda-list function)))
 
 @ We might want documentation strings as well.
 
