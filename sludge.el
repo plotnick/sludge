@@ -275,9 +275,9 @@ Intended to be used as a value for `eldoc-documentation-function'."
         (if (eq symbol (car sludge-last-arglist))
             (when (cdr sludge-last-arglist)
               (eldoc-message (apply #'make-arglist-string sludge-last-arglist)))
-            (sludge-arglist symbol))))))
+            (sludge-show-arglist symbol))))))
 
-(defun sludge-arglist (&optional fn)
+(defun sludge-show-arglist (&optional fn)
   (interactive (lisp-symprompt "Function argument list" (lisp-fn-called-at-pt)))
   (setq sludge-last-arglist (list fn))
   (sludge-async-request sludge-process
@@ -342,7 +342,7 @@ Makes no attempt to deal with potential numbers or macro characters."
 
 ;;;; Documentation handling.
 
-(defun sludge-documentation (name doc-type)
+(defun sludge-show-documentation (name doc-type)
   (sludge-async-request sludge-process
                         :documentation (list name doc-type)
                         (lambda (docstring)
@@ -354,13 +354,13 @@ Makes no attempt to deal with potential numbers or macro characters."
         ((symbolp object) object)
         (t (error "Not a symbol designator: %S" object))))
 
-(defun sludge-function-documentation (&optional fn)
+(defun sludge-show-function-documentation (&optional fn)
   (interactive (lisp-symprompt "Function documentation" (lisp-fn-called-at-pt)))
-  (sludge-documentation (ensure-symbol fn) 'function))
+  (sludge-show-documentation (ensure-symbol fn) 'function))
 
-(defun sludge-variable-documentation (&optional var)
+(defun sludge-show-variable-documentation (&optional var)
   (interactive (lisp-symprompt "Variable documentation" (lisp-var-at-pt)))
-  (sludge-documentation (ensure-symbol var) 'variable))
+  (sludge-show-documentation (ensure-symbol var) 'variable))
 
 (defun sludge-describe-symbol (&optional symbol)
   (interactive (lisp-symprompt "Describe" (lisp-var-at-pt)))
