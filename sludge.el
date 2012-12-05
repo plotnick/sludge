@@ -261,10 +261,10 @@ Reads a response from the Lisp and handles it."
 ;;;; Arglist handling.
 
 ;;; This is the whole reason this system exists. To avoid reinventing the
-;;; wheel yet again, we'll hook into ElDoc and use its arglist display code.
+;;; wheel yet again, we'll hook into ElDoc and use its message display code.
 
-(defvar sludge-last-arglist nil
-  "A one-element cache for function arglists.")
+;;; We keep a per-buffer, one-element cache of the most recently fetched
+;;; arglist. This should help reduce request traffic in many cases.
 
 (defun sludge-documentation-function ()
   "Display a documentation string for the function at or around point.
@@ -272,18 +272,20 @@ Intended to be used as a value for `eldoc-documentation-function'."
   (when sludge-process
     (let ((symbol (lisp-fn-called-at-pt)))
       (when symbol
-        (if (eq symbol (car sludge-last-arglist))
-            (when (cdr sludge-last-arglist)
-              (eldoc-message (apply #'make-arglist-string sludge-last-arglist)))
-            (sludge-show-arglist symbol))))))
+        (let ((cache (process-get sludge-process 'sludge-last-arglist)))
+          (if (eq symbol (car cache))
+              (when (cdr cache)
+                (eldoc-message (apply #'make-arglist-string cache)))
+              (sludge-show-arglist symbol)))))))
 
 (defun sludge-show-arglist (&optional fn)
   (interactive (lisp-symprompt "Function argument list" (lisp-fn-called-at-pt)))
-  (setq sludge-last-arglist (list fn))
+  (process-put sludge-process 'sludge-last-arglist (list fn))
   (sludge-async-request sludge-process
                         :arglist (list fn)
                         (lambda (arglist)
-                          (setq sludge-last-arglist (list fn arglist))
+                          (process-put sludge-process 'sludge-last-arglist
+                                       (list fn arglist))
                           (eldoc-message (make-arglist-string fn arglist)))
                         #'ignore))
 
