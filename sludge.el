@@ -338,3 +338,25 @@ Makes no attempt to deal with potential numbers or macro characters."
        'sludge-documentation-function))
 
 (add-hook 'sludge-mode-hooks 'sludge-setup-eldoc)
+
+;;;; Docstring handling.
+
+(defun sludge-documentation (name doc-type)
+  (sludge-async-request sludge-process
+                        :documentation (list name doc-type)
+                        (lambda (docstring)
+                          (eldoc-message docstring))
+                        #'ignore))
+
+(defun ensure-symbol (object)
+  (cond ((stringp object) (intern object))
+        ((symbolp object) object)
+        (t (error "Not a symbol designator: %S" object))))
+
+(defun sludge-function-documentation (&optional fn)
+  (interactive (lisp-symprompt "Function documentation" (lisp-fn-called-at-pt)))
+  (sludge-documentation (ensure-symbol fn) 'function))
+
+(defun sludge-variable-documentation (&optional var)
+  (interactive (lisp-symprompt "Variable documentation" (lisp-var-at-pt)))
+  (sludge-documentation (ensure-symbol var) 'variable))
