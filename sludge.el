@@ -112,22 +112,25 @@ connection (i.e., the one from which all others will be cloned)."
 
 (defun sludge-connect (address)
   "Connect to the SLUDGE server at ADDRESS."
-  (cond ((and (listp address) (car address))
-         (make-network-process :name "sludge"
-                               :host (car address)
-                               :service (cadr address)
-                               :noquery t
-                               :coding 'utf-8-unix
-                               :filter 'sludge-process-reply))
-        ((or (stringp address)
-             (and (listp address) (setq address (cadr address))))
-         (make-network-process :name "sludge"
-                               :family 'local
-                               :service address
-                               :noquery t
-                               :coding 'utf-8-unix
-                               :filter 'sludge-process-reply))
-        (t (error "Can't connect to SLUDGE server at %s" address))))
+  (sludge-init-process
+   (cond ((and (listp address) (car address))
+          (make-network-process :name "sludge"
+                                :host (car address)
+                                :service (cadr address)
+                                :noquery t
+                                :coding 'utf-8-unix
+                                :filter 'sludge-process-reply))
+         ((or (stringp address)
+              (and (listp address) (setq address (cadr address))))
+          (make-network-process :name "sludge"
+                                :family 'local
+                                :service address
+                                :noquery t
+                                :coding 'utf-8-unix
+                                :filter 'sludge-process-reply))
+         (t (error "Can't connect to SLUDGE server at %s" address)))))
+
+;;;; The SLUDGE Protocol.
 
 ;;; These must match the definitions on the server side, or else there will
 ;;; be much wailing and gnashing of teeth.
@@ -142,31 +145,44 @@ connection (i.e., the one from which all others will be cloned)."
 
 ;;; In the SLUDGE protocol, we send requests from Emacs to the Lisp server,
 ;;; and possibly receive responses to those requests. Requests are tagged
-;;; with client-generated integer identifiers. We'll keep our pending
-;;; requests in a hash table, keyed on request codes, with values of the
-;;; form (TAG OK ERR). If a response comes in with a tag less than TAG,
-;;; we ignore it; otherwise, we invoke either OK or ERR with the arguments
-;;; from the response message.
+;;; with client-generated integer identifiers. For each connection to a
+;;; server, we'll keep our pending requests in a hash table keyed on
+;;; request codes, with values of the form (TAG OK ERR). If a response
+;;; comes in with a tag less than TAG, we ignore it; otherwise, we invoke
+;;; either OK or ERR with the arguments from the response message.
+;;; The pending requests table and tag counter are both stored in the
+;;; connection process's plist, so there's no chance of confusion about
+;;; which messages belong to what process.
 
-(defvar sludge-pending-requests (make-hash-table))
-(defvar sludge-tag-counter 0)
+(defun sludge-init-process (process)
+  (process-put process 'sludge-pending-requests (make-hash-table))
+  (process-put process 'sludge-tag-counter 1)
+  process)
 
-(defun sludge-clear-pending-requests ()
-  (clrhash sludge-pending-requests))
+(defun sludge-pending-requests (process)
+  "Return the pending request hash table for PROCESS."
+  (process-get process 'sludge-pending-requests))
+
+(defun sludge-tag-counter (process)
+  "Return and increment the request tag counter for PROCESS."
+  (let ((tag (process-get process 'sludge-tag-counter)))
+    (process-put process 'sludge-tag-counter (1+ tag))
+    tag))
 
 (defun sludge-default-error-handler (error-symbol msg &rest args)
   (error "%s: %s" error-symbol msg))
 
-(defun sludge-set-callbacks (code tag ok &optional err)
-  (let ((err (or err #'sludge-default-error-handler)))
-    (puthash code (list tag ok err) sludge-pending-requests)))
+(defun sludge-set-callbacks (process code tag ok &optional err)
+  (puthash code
+           (list tag ok (or err 'sludge-default-error-handler))
+           (sludge-pending-requests process)))
 
-(defun sludge-handle-response (response)
+(defun sludge-handle-response (process response)
   (let ((code (sludge-response-code response))
         (request-code (sludge-request-code response))
         (response-tag (sludge-response-tag response))
         (args (sludge-response-args response)))
-    (let ((entry (or (gethash request-code sludge-pending-requests)
+    (let ((entry (or (gethash request-code (sludge-pending-requests process))
                      (error "Unexpected response from Lisp: %s" response))))
       (let ((request-tag (nth 0 entry))
             (ok (nth 1 entry))
@@ -177,29 +193,29 @@ connection (i.e., the one from which all others will be cloned)."
                     (if (eq code :ok)
                         (apply ok args)
                         (apply err args))
-                 (remhash request-code sludge-pending-requests)))
+                 (remhash request-code (sludge-pending-requests process))))
               (t (error "Unexpected tag in response: %s" response)))))))
 
-(defun sludge-send-request (proc request)
-  (process-send-string proc (format "%S\n" request)))
+(defun sludge-send-request (process request)
+  (process-send-string process (format "%S\n" request)))
 
-(defun sludge-async-request (proc code args ok &optional err)
-  (let ((tag (setq sludge-tag-counter (1+ sludge-tag-counter))))
-    (sludge-set-callbacks code tag ok err)
-    (sludge-send-request proc (apply #'make-sludge-request code tag args))))
+(defun sludge-async-request (process code args ok &optional err)
+  (let ((tag (sludge-tag-counter process)))
+    (sludge-set-callbacks process code tag ok err)
+    (sludge-send-request process (apply #'make-sludge-request code tag args))))
 
-(defun sludge-request (proc code &rest args)
-  "Make a synchronous request to the SLUDGE server at PROC."
+(defun sludge-request (process code &rest args)
+  "Make a synchronous request to the SLUDGE server at PROCESS."
   (catch 'done
-    (sludge-async-request proc code args
+    (sludge-async-request process code args
                           (lambda (&rest args) (throw 'done args))
                           (lambda (&rest args) (throw 'done nil)))
     (let ((debug-on-quit t)
           (inhibit-quit nil))
-      (while (process-live-p proc)
-        (accept-process-output proc 0.01)))))
+      (while (process-live-p process)
+        (accept-process-output process 0.01)))))
 
-(defun sludge-process-reply (proc string)
+(defun sludge-process-reply (process string)
   "The SLUDGE process filter function.
 Reads a response from the Lisp and handles it."
   (let ((form (read string)))
@@ -208,7 +224,7 @@ Reads a response from the Lisp and handles it."
                 (member (nth 0 form) '(:ok :error))
                 (symbolp (nth 1 form))
                 (numberp (nth 2 form)))
-           (sludge-handle-response form))
+           (sludge-handle-response process form))
           (t (error "Invalid response from Lisp: %s" form)))))
 
 ;;;; Package handling.
