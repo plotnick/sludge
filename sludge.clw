@@ -648,6 +648,43 @@ symbol.
              (format stream "No such package: ~A" ;
                      (package-error-package condition)))))
 
+@ Now we'll define the protocol message that implements the second main
+reason for this system's existence: Lisp symbol completion.
+
+@l
+(defun string-prefix-p (prefix string)
+  (let ((l (length (string prefix)))
+        (m (length (string string))))
+    (and (>= m l)
+         (let ((n (min l m)))
+           (string-equal prefix string :end1 n :end2 n)))))
+
+(defun match-symbols (name &optional external-p (package *package*))
+  (with-package-iterator (next-symbol package :internal :external :inherited)
+    (let (matches)
+      (loop
+        (multiple-value-bind (more symbol accessibility) (next-symbol)
+          (unless more (return (sort (remove-duplicates matches) #'string<)))
+          (when (and (if external-p (not (eq accessibility :internal)) t)
+                     (string-prefix-p name symbol))
+            (push symbol matches)))))))
+
+(define-request-handler :symbol-completions (name &optional external-p)
+  (match-symbols name external-p))
+
+@t@l
+(deftest string-prefix-p
+  (values (string-prefix-p "" "foo")
+          (string-prefix-p "f" "foo")
+          (string-prefix-p "foo" "foo")
+          (string-prefix-p "foo-bar" "foo")
+          (string-prefix-p "abc" "foo"))
+  t
+  t
+  t
+  nil
+  nil)
+
 @ Clients are free to just disconnect when they're done, but they might
 prefer to be polite about it and ask that the connection be terminated.
 

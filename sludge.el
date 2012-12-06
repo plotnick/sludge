@@ -398,3 +398,40 @@ Makes no attempt to deal with potential numbers or macro characters."
                         (lambda (description)
                           (with-output-to-temp-buffer "*describe*"
                             (princ description)))))
+
+;;;; Very simple symbol completion.
+
+(defun sludge-symbol-completions (symbol)
+  (mapcar 'symbol-name
+          (sludge-request (or sludge-process (sludge-master-process))
+                          :symbol-completions (upcase (ensure-string symbol)))))
+
+(defun sludge-completion-at-point ()
+  ;; Adapted from lisp-completion-at-point.
+  (let* ((pos (point))
+         (start (condition-case nil
+                  (save-excursion
+                    (backward-sexp 1)
+                    (skip-syntax-forward "'")
+                    (point))
+                (scan-error pos)))
+         (end (unless (or (eq start (point-max))
+                          (member (char-syntax (char-after start))
+                                  '(?\" ?\( ?\))))
+                (condition-case nil
+                    (save-excursion
+                      (goto-char start)
+                      (forward-sexp 1)
+                      (when (>= (point) pos)
+                        (point)))
+                  (scan-error pos)))))
+    (when end
+      (list start end (sludge-symbol-completions
+                       (buffer-substring-no-properties start end))))))
+
+(defun sludge-setup-completion ()
+  (add-hook 'completion-at-point-functions
+            'sludge-completion-at-point
+            nil 'local))
+
+(add-hook 'sludge-mode-hooks 'sludge-setup-completion)
