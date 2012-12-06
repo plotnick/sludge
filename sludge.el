@@ -403,29 +403,14 @@ Makes no attempt to deal with potential numbers or macro characters."
 
 (defun sludge-symbol-completions (symbol)
   (mapcar 'symbol-name
-          (sludge-request (or sludge-process (sludge-master-process))
+          (sludge-request sludge-process
                           :symbol-completions (upcase (ensure-string symbol)))))
 
 (defun sludge-completion-at-point ()
-  ;; Adapted from lisp-completion-at-point.
-  (let* ((pos (point))
-         (start (condition-case nil
-                  (save-excursion
-                    (backward-sexp 1)
-                    (skip-syntax-forward "'")
-                    (point))
-                (scan-error pos)))
-         (end (unless (or (eq start (point-max))
-                          (member (char-syntax (char-after start))
-                                  '(?\" ?\( ?\))))
-                (condition-case nil
-                    (save-excursion
-                      (goto-char start)
-                      (forward-sexp 1)
-                      (when (>= (point) pos)
-                        (point)))
-                  (scan-error pos)))))
-    (when end
+  (let* ((bounds (bounds-of-thing-at-point 'symbol))
+         (start (car bounds))
+         (end (cdr bounds)))
+    (when bounds
       (list start end (sludge-symbol-completions
                        (buffer-substring-no-properties start end))))))
 
