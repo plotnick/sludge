@@ -355,23 +355,15 @@ Most of this implementation was cribbed from SBCL's \repl.
               (mapc (lambda (value) (format t "~S~&" value)) values)
               (fresh-line)))))))
 
-@ What's a server without logging? The server functions above all send
-debugging messages to the stream in |*log-output*| using this function.
+@ What's a server without logging? We'll use a subclass of |warning| so that
+they can be easily muffled.
 
-@<Define server logging routine@>=
-(defun server-log (control-string &rest args)
-  "Send a formatted debugging message to the log output stream."
-  (when *log-output*
-    (apply #'format *log-output* control-string args)
-    (force-output *log-output*)))
+@<Define server logging...@>=
+(defun server-log (format-control &rest args)
+  (warn 'server-log :format-control format-control :format-arguments args))
 
-@ A few potentially useful values for |*log-output|: |nil|, meaning no
-messages will be logged; a synonym stream for |*terminal-io*|; or~a file
-output stream.
-
-@<Global variables@>=
-(defvar *log-output* nil
-  "A designator for a stream on which to print server debugging messages.")
+@ @<Condition classes@>=
+(define-condition server-log (simple-warning) ())
 
 @ The \sludge\ protocol may be informally specified as follows. Sequences
 of octets (8-bit bytes) are interpreted as representing Unicode characters
@@ -728,18 +720,18 @@ current request and picks up with the next one.
                 (send-error-message code tag condition)))))))))
 
 @ We'll rebind standard input and output to streams that echo to the output
-stream in |*message-log*|. The default is an output stream sink, but if you
-set it to a stream like |*error-output*|, you can watch the protocol traffic.
+stream in |*log-output*|. The default is a bottomless sink, but if you set
+it to a stream like |*error-output*|, you can watch the protocol traffic.
 
 @<Global variables@>=
-(defvar *message-log* (make-broadcast-stream)
-  "The stream to which SLUDGE messages should be logged.")
+(defvar *log-output* (make-broadcast-stream)
+  "The output stream to which SLUDGE messages should be logged.")
 
 @ @<Echo standard input...@>=
-(make-echo-stream *standard-input* (make-synonym-stream '*message-log*))
+(make-echo-stream *standard-input* (make-synonym-stream '*log-output*))
 
 @ @<Echo standard output...@>=
-(make-broadcast-stream *standard-output* (make-synonym-stream '*message-log*))
+(make-broadcast-stream *standard-output* (make-synonym-stream '*log-output*))
 
 @*Index.
 @t*Index.
