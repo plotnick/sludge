@@ -272,6 +272,8 @@ Reads a response from the Lisp and handles it."
                "COMMON-LISP-USER"))))
 
 (defun sludge-in-package (name)
+  "Set the current Common Lisp package to NAME."
+  (interactive "MPackage name: ")
   (let ((buffer (current-buffer)))
     (sludge-async-request sludge-process
                           :in-package (list name)
