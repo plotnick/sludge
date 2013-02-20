@@ -273,8 +273,8 @@ used to override the default behavior.
                                             (function-lambda-expression ;
                                              repl)))))
          (funcall repl))
-    (socket-close client)
-    (server-log "Client connection closed.~%")))
+    (prog1 (socket-close client)
+      (server-log "Client connection closed.~%"))))
 
 (defun server-accept (socket repl &key (spawn t))
   (let ((client (socket-accept socket)))
@@ -295,8 +295,8 @@ used to override the default behavior.
          (when once-only (return)))
     (when (typep server 'local-socket)
       (ignore-errors (delete-file (socket-name server))))
-    (socket-close server)
-    (server-log "Server socket closed.~%")))
+    (prog1 (socket-close server)
+      (server-log "Server socket closed.~%"))))
 
 @ With the above machinery in place, we come now to the primary public
 interface of the whole system: a pair of functions which start and stop,
