@@ -63,18 +63,27 @@ but we'd like them to appear near the top of the tangled output.
 @<Global variables@>
 @<Condition classes@>
 
-@ We'll start with the low-level guts of the server. This implementation
-is specific to the |sb-bsd-sockets| module, but should be easily portable
-to any standard {\sc bsd}-style socket {\sc api}.
+@1*Serving network clients. We'll start with the low-level guts of the
+server. This implementation is specific to the |sb-bsd-sockets| module, but
+should be easily portable to any standard {\sc bsd}-style socket {\sc api}.
 
-When we make a socket for the server, we'll bind it to an address and have
+@ What's a server without logging? We'll use a subclass of |warning| so that
+they can be easily muffled.
+
+@l
+(defun server-log (format-control &rest args)
+  (warn 'server-log :format-control format-control :format-arguments args))
+
+@ @<Condition classes@>=
+(define-condition server-log (simple-warning) ())
+
+@ When we make a socket for the server, we'll bind it to an address and have
 it listen there for connections. The function |make-server-socket| thus
 returns a new socket ready to accept connections, or else signals an error.
 The domain of the constructed socket is determined automatically from the
 type of address given, with slightly hairy defaulting behavior.
 
 @l
-@<Define server logging routine@>
 @<Define |with-umask| macro@>
 
 (deftype inet-addr () '(or (simple-vector 4) (vector (unsigned-byte 8) 4)))
@@ -366,22 +375,38 @@ Most of this implementation was cribbed from SBCL's \repl.
               (mapc (lambda (value) (format t "~S~&" value)) values)
               (fresh-line)))))))
 
-@ What's a server without logging? We'll use a subclass of |warning| so that
-they can be easily muffled.
+@ Since we haven't yet even described our protocol, we can only sketch
+our main loop at this time. We'll fill in the details later, after we've
+defined our protocol interface.
 
-@<Define server logging...@>=
-(defun server-log (format-control &rest args)
-  (warn 'server-log :format-control format-control :format-arguments args))
+@l
+(defun main-loop ()
+  (let ((*read-eval* nil)
+        (*standard-input* @<Echo standard input to the message log@>)
+        (*standard-output* @<Echo standard output to the message log@>))
+    (loop @<Read and handle a request@>)))
 
-@ @<Condition classes@>=
-(define-condition server-log (simple-warning) ())
+@ Before beginning to process requests, we'll rebind standard input and output
+to streams that echo to the output stream in |*log-output*|. The default is
+a bottomless sink, but if you set it to a stream like |*error-output*|, you
+can watch the protocol traffic.
 
-@ The \sludge\ protocol may be informally specified as follows. Sequences
-of octets (8-bit bytes) are interpreted as representing Unicode characters
-using a pre-arranged encoding. (Future versions of the protocol might have
-some kind of encoding negotiation.) The characters form sexps, but with a
-highly restricted syntax. The sexps denote {\it messages\/}, which are
-divided into {\it requests\/} and {\it responses\/}.
+@<Global variables@>=
+(defvar *log-output* (make-broadcast-stream)
+  "The output stream to which SLUDGE messages should be logged.")
+
+@ @<Echo standard input...@>=
+(make-echo-stream *standard-input* (make-synonym-stream '*log-output*))
+
+@ @<Echo standard output...@>=
+(make-broadcast-stream *standard-output* (make-synonym-stream '*log-output*))
+
+@1*Protocol definition. The \sludge\ protocol may be informally described
+as follows. Sequences of octets (8-bit bytes) are interpreted as representing
+Unicode characters using a pre-arranged encoding. (Future versions of the
+protocol might have some kind of encoding negotiation.) The characters form
+s-expressions, but with a highly restricted syntax. The s-exps denote
+{\it messages\/},which are divided into {\it requests\/} and {\it responses\/}.
 
 Requests are represented as lists of the form |(code tag args)|, where
 |code| is any keyword symbol other than |:ok| and~|:error|, |tag| is a
@@ -585,13 +610,38 @@ specialized on request codes.
              (format stream "Invalid request ~S."
                      (invalid-request-message condition)))))
 
-@ Request handlers tend to follow a similar pattern, so we'll use a
+@ We now have all of the pieces in place to define the core of our main
+loop. If \eof\ is encountered during the read, we exit the loop. If an
+error occurs during request handling, we send an error response and
+continue processing with the next message. If the client signals their
+desire to disconnect, we acknowledge the request and exit the loop. We also
+establish a |continue| restart which simply ignores the current request and
+picks up with the next one.
+
+@<Read and handle a request@>=
+(with-simple-restart (continue "Ignore this request.")
+  (let ((request (handler-case (read-request)
+                   (reader-error () (continue))
+                   (type-error () (continue))
+                   (invalid-request-message () (continue))
+                   (end-of-file () (return)))))
+    (destructuring-bind (code tag &rest args) request
+      (handler-case (apply #'handle-request code tag args)
+        (client-disconnect (condition)
+          (send-message ;
+           (apply #'make-response-message :ok code tag
+                  (client-disconnect-args condition)))
+          (return))
+        (error (condition)
+          (send-error-message code tag condition))))))
+
+@1*Request handlers. These tend to follow a similar pattern, so we'll use a
 defining macro that abstracts it a bit. The request arguments are bound
 using |destructuring-bind| to the parameters specified by |lambda-list|,
 and the body should return a designator for a list of response arguments,
-from which a response message will be constructed and sent. We'll leave
-it up to the main loop to handle any errors by constructing and sending
-error responses.
+from which a response message will be constructed and sent. We'll leave it
+up to the main loop to handle any errors by constructing and sending error
+responses.
 
 @l
 (defmacro define-request-handler (request-code lambda-list &body body)
@@ -698,51 +748,6 @@ prefer to be polite about it and ask that the connection be terminated.
 @ @<Condition classes@>=
 (define-condition client-disconnect ()
   ((args :reader client-disconnect-args :initarg :args)))
-
-@ Having defined all of our message handlers, let's return to the server
-proper. Our main loop for the \sludge\ server reads a request, calls
-|handle-request|, then loops. If \eof\ is encountered during the read, we
-exit the loop. If an error occurs during request handling, we send an error
-response and continue processing with the next message. If the client
-signals their desire to disconnect, we acknowledge the request and exit
-the loop. We also establish a |continue| restart which simply ignores the
-current request and picks up with the next one.
-
-@l
-(defun main-loop ()
-  (let ((*read-eval* nil)
-        (*standard-input* @<Echo standard input to the message log@>)
-        (*standard-output* @<Echo standard output to the message log@>))
-    (loop
-      (with-simple-restart (continue "Ignore this request.")
-        (let ((request (handler-case (read-request)
-                         (reader-error () (continue))
-                         (type-error () (continue))
-                         (invalid-request-message () (continue))
-                         (end-of-file () (return)))))
-          (destructuring-bind (code tag &rest args) request
-            (handler-case (apply #'handle-request code tag args)
-              (client-disconnect (condition)
-                (send-message ;
-                 (apply #'make-response-message :ok code tag
-                        (client-disconnect-args condition)))
-                (return))
-              (error (condition)
-                (send-error-message code tag condition)))))))))
-
-@ We'll rebind standard input and output to streams that echo to the output
-stream in |*log-output*|. The default is a bottomless sink, but if you set
-it to a stream like |*error-output*|, you can watch the protocol traffic.
-
-@<Global variables@>=
-(defvar *log-output* (make-broadcast-stream)
-  "The output stream to which SLUDGE messages should be logged.")
-
-@ @<Echo standard input...@>=
-(make-echo-stream *standard-input* (make-synonym-stream '*log-output*))
-
-@ @<Echo standard output...@>=
-(make-broadcast-stream *standard-output* (make-synonym-stream '*log-output*))
 
 @*Index.
 @t*Index.
