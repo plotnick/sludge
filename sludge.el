@@ -21,10 +21,16 @@
  (defvar sludge-process nil
    "Connection to SLUDGE server."))
 
-(defvar sludge-default-address "/tmp/sludge")
-
 (defvar sludge-poll-rate 0.1)
 (defvar sludge-max-retries 5)
+
+(defvar sludge-default-address-format "/tmp/sludge-%d"
+  "Format string used to generate the default SLUDGE address.
+Should contain a numeric format operator, for which the Lisp
+process id will be provided as argument.")
+
+(defun sludge-default-address ()
+  (format sludge-default-address-format (process-id (sludge-lisp-proc))))
 
 (defun sludge-mode (&optional arg)
     "Toggle SLUDGE mode.
@@ -42,7 +48,7 @@ be made and used for background interaction with a Common Lisp system."
                    (let ((master (sludge-master-process)))
                      (if master
                          (sludge-connect (process-contact master))
-                         (sludge-start-server sludge-default-address))))
+                         (sludge-start-server (sludge-default-address)))))
            (error (setq sludge-mode nil)
                   (signal (car err) (cdr err))))
          (setq sludge-mode t)
@@ -72,40 +78,45 @@ be made and used for background interaction with a Common Lisp system."
 
 (add-minor-mode 'sludge-mode " SLUDGE" sludge-mode-map)
 
+(defun sludge-lisp-proc ()
+  (cond ((and (fboundp 'inferior-lisp-proc) inferior-lisp-buffer)
+         (inferior-lisp-proc))
+        (t (error "Can't find Lisp process"))))
+
+(defmacro with-sludge-lisp-buffer (&rest body)
+  `(with-current-buffer inferior-lisp-buffer ,@body))
+
 (defun sludge-start-server-command (address)
   (format "(sludge:start-server :address %S)\n" address))
 
 (defun sludge-stop-server-command ()
   "(sludge:stop-server)")
 
+(defun sludge-send-lisp-string (string &optional process)
+  (comint-send-string (or process (sludge-lisp-proc)) string))
+
 (defun sludge-start-server (address)
   "Start the SLUDGE server in an inferior Lisp and connect to it.
 Sets the inferior Lisp buffer's `sludge-process' variable to the \"master\"
 connection (i.e., the one from which all others will be cloned)."
-  (interactive (list sludge-default-address))
-  (cond (inferior-lisp-buffer
-         (comint-send-string (inferior-lisp-proc)
-                             (sludge-start-server-command address)))
-        (t (error "Can't find Lisp process")))
-  (with-current-buffer inferior-lisp-buffer
+  (interactive (list (sludge-default-address)))
+  (sludge-send-lisp-string (sludge-start-server-command address))
+  (with-sludge-lisp-buffer
     (setq sludge-process (sludge-try-connect address))))
 
 (defun sludge-stop-server ()
   "Stop the SLUDGE server and disconnect all clients."
   (interactive)
   ;; This should be a protocol message.
-  (cond (inferior-lisp-buffer
-         (comint-send-string (inferior-lisp-proc)
-                             (sludge-stop-server-command)))
-        (t (error "Can't find Lisp process")))
+  (sludge-send-lisp-string (sludge-stop-server-command))
   (message "SLUDGE server stopped")
-  (with-current-buffer inferior-lisp-buffer
+  (with-sludge-lisp-buffer
     (when sludge-process
       (delete-process sludge-process)
       (setq sludge-process nil))))
 
 (defun sludge-master-process ()
-  (ignore-errors (with-current-buffer inferior-lisp-buffer sludge-process)))
+  (ignore-errors (with-sludge-lisp-buffer sludge-process)))
 
 (defun sludge-try-connect (address)
   "Repeatedly attempt to connect to the SLUDGE server at ADDRESS."
