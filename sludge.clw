@@ -125,7 +125,9 @@ to put temporary socket files.
                          :directory '(:absolute "tmp"))))
 
 (defmacro with-open-server-socket ((socket address &optional args) &body body)
-  `(let ((,socket (apply #'make-server-socket ,address ,args)))
+  `(let ((,socket
+          (handler-bind ((server-log #'muffle-warning))
+            (apply #'make-server-socket ,address ,args))))
      (unwind-protect (progn ,@body)
        (socket-close ,socket))))
 
@@ -156,7 +158,8 @@ We assume that |*default-port*| on the local host is available for binding.
     (and (socket-open-p socket)
          (typep (multiple-value-list (socket-name socket)) 'inet-sock-addr)
          (handler-case
-             (apply #'make-server-socket address args)
+             (handler-bind ((server-log #'muffle-warning))
+               (apply #'make-server-socket address args))
            (address-in-use-error () t)))))
 
 (deftest (make-server-socket inet)
@@ -238,7 +241,8 @@ the address is already in use (by~|a|). So we close |a| and invoke the
                                 (lambda (condition)
                                   (declare (ignore condition))
                                   (setq retried t)
-                                  (invoke-restart 'delete-file))))
+                                  (invoke-restart 'delete-file)))
+                               (server-log #'muffle-warning))
                   (make-server-socket address))))
         (unwind-protect (values (socket-open-p a) (socket-open-p b) retried)
           (socket-close b)
