@@ -283,11 +283,21 @@ Reads a response from the Lisp and handles it."
 
 ;;;; Arglist handling.
 
-;;; This is the whole reason this system exists. To avoid reinventing the
-;;; wheel yet again, we'll hook into ElDoc and use its message display code.
-
 ;;; We keep a per-buffer, one-element cache of the most recently fetched
 ;;; arglist. This should help reduce request traffic in many cases.
+
+(defun sludge-cache-arglist (fn &rest arglist)
+  (when sludge-process
+    (process-put sludge-process
+                 'sludge-last-arglist
+                 (nconc (list fn) arglist))))
+
+(defun sludge-last-arglist ()
+  (when sludge-process
+    (process-get sludge-process 'sludge-last-arglist)))
+
+;;; To avoid reinventing the wheel yet again, we'll hook into ElDoc and use
+;;; its message display code.
 
 (defun sludge-documentation-function ()
   "Display a documentation string for the function at or around point.
@@ -295,7 +305,7 @@ Intended to be used as a value for `eldoc-documentation-function'."
   (when sludge-process
     (let ((symbol (lisp-fn-called-at-pt)))
       (when symbol
-        (let ((cache (process-get sludge-process 'sludge-last-arglist)))
+        (let ((cache (sludge-last-arglist)))
           (if (eq symbol (car cache))
               (when (cdr cache)
                 (eldoc-message (apply #'make-arglist-string cache)))
@@ -304,12 +314,11 @@ Intended to be used as a value for `eldoc-documentation-function'."
 (defun sludge-show-arglist (&optional fn)
   (interactive (lisp-symprompt "Function argument list" (lisp-fn-called-at-pt)))
   (setq fn (ensure-symbol fn))
-  (process-put sludge-process 'sludge-last-arglist (list fn))
+  (sludge-cache-arglist fn)
   (sludge-async-request sludge-process
                         :arglist (list fn)
                         (lambda (arglist)
-                          (process-put sludge-process 'sludge-last-arglist
-                                       (list fn arglist))
+                          (sludge-cache-arglist fn arglist)
                           (eldoc-message (make-arglist-string fn arglist)))
                         #'ignore))
 
