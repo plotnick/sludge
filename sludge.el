@@ -291,6 +291,7 @@ Intended to be used as a value for `eldoc-documentation-function'."
 
 (defun sludge-show-arglist (&optional fn)
   (interactive (lisp-symprompt "Function argument list" (lisp-fn-called-at-pt)))
+  (setq fn (ensure-symbol fn))
   (process-put sludge-process 'sludge-last-arglist (list fn))
   (sludge-async-request sludge-process
                         :arglist (list fn)
