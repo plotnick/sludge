@@ -220,7 +220,8 @@ connection (i.e., the one from which all others will be cloned)."
   (process-send-string process (format "%S\n" request)))
 
 (defun sludge-async-request (process code args ok &optional err)
-  (unless (and process (process-live-p process))
+  (unless (and (setq process (or process (sludge-master-process)))
+               (process-live-p process))
     (error "Invalid SLUDGE process"))
   (let ((tag (sludge-tag-counter process)))
     (sludge-set-callbacks process code tag ok err)
