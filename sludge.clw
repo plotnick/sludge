@@ -187,9 +187,9 @@ more than sufficient.
   "Maximum length of pending connections queue.")
 
 @ Both binding a socket to an address and attempting to listen on it can
-fail for many reasons. If they do, there's not much that can be usefully
-done with the socket, so we'll offer an |abort| restart that shuts it down
-and returns |nil|.
+fail for many reasons. If the listen fails, there's usually not much that
+can be usefully done with the socket, so we'll offer an |abort| restart
+that closes it down gracefully.
 
 @<Bind |socket| to |address| and listen for connections@>=
 (restart-case (progn
@@ -200,16 +200,13 @@ and returns |nil|.
     (socket-close socket)
     (abort)))
 
-@ When attempting to bind a socket to an address, though, there's the
-possibility of transient failure; e.g., another server might already
-be bound to that address. So we'll provide a |retry| restart to allow
-the user the possibility of correcting the error (e.g., shutting down
-the other server).
+@ But with binding, transient failures are more common, so we'll provide a
+|retry| restart to allow the user the possibility of correcting the error.
+The most common cause of transient binding failure is probably the address
+being already in use (e.g., by another server).
 
-When binding to a local domain socket, we'll first remove any file that
-already exists at that address, then lock down permissions on the socket
-file that we create by temporarily changing the file creation mode mask;
-see \man umask(2).
+When binding to a local domain socket, we'll also give the option to remove
+any file that already exists at that address.
 
 @<Bind |socket| to |address|@>=
 (tagbody
@@ -217,26 +214,36 @@ see \man umask(2).
   (restart-case
       (etypecase address
         (inet-sock-addr (apply #'socket-bind socket address))
-        (pathname (ignore-errors (delete-file address))
-                  (with-umask umask
-                    (socket-bind socket (namestring address)))))
+        (pathname (with-umask umask
+                    (restart-case (socket-bind socket (namestring address))
+                      (delete-file ()
+                        :report "Delete the socket file and retry binding."
+                        (ignore-errors (delete-file address))
+                        (go bind))))))
     (retry ()
       :report "Retry binding the socket."
       (go bind))))
 
-@t@l
+@t First, we'll open a local socket |a| at some address (filename). Then
+we'll try to open a socket~|b| at the same address; this will fail, since
+the address is already in use (by~|a|). So we close |a| and invoke the
+|delete-file| restart; |b| should then open.
+
+@l
 (deftest (make-server-socket retry)
-  (let ((a (make-server-socket nil)))
-    (when (socket-open-p a)
-      (let ((b (handler-bind ((address-in-use-error
-                               (lambda (condition)
-                                 (declare (ignore condition))
-                                 (socket-close a)
-                                 (invoke-restart 'retry))))
-                 (make-server-socket nil))))
-        (unwind-protect (socket-open-p b)
-          (socket-close b)))))
-  t)
+  (let ((address (make-temp-socket-name)))
+    (with-open-server-socket (a address)
+      (let* ((retried nil)
+             (b (handler-bind ((address-in-use-error
+                                (lambda (condition)
+                                  (declare (ignore condition))
+                                  (setq retried t)
+                                  (invoke-restart 'delete-file))))
+                  (make-server-socket address))))
+        (unwind-protect (values (socket-open-p a) (socket-open-p b) retried)
+          (socket-close b)
+          (delete-file address)))))
+  t t t)
 
 @ @<Define |with-umask|...@>=
 (defmacro with-umask (umask &body body)
