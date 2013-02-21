@@ -299,7 +299,7 @@ used to override the default behavior.
 (defun server-accept (socket repl &key (spawn t))
   (let ((client (socket-accept socket)))
     (server-log "Accepted connection on ~{~A~^ port ~D~}~
-                 ~{ from client at ~A~^ port ~D~}."
+                 ~{ from ~:[local client~;client at ~:*~A~^ port ~D~]~}."
                 (multiple-value-list (socket-name socket))
                 (multiple-value-list (socket-peername client)))
     (if spawn
