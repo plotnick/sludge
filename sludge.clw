@@ -353,14 +353,14 @@ Most of this implementation was cribbed from SBCL's \repl.
 
 @l
 (defun toplevel-eval (form &key (eval #'eval))
-  "Evaluate FORM, returning whatever it returns and adjusting ***, **, *,
-+++, ++, +, ///, //, /, and -."
+  "Evaluate FORM, returning whatever it returns and adjusting the
+variables ***, **, *, +++, ++, +, ///, //, /, and -."
   (setq - form)
   (unwind-protect
        (let ((values (multiple-value-list (funcall eval form))))
-         (setq /// // // / / values
-               *** ** ** * * (first values)))
-    (setq +++ ++ ++ + + -))
+         (shiftf /// // / values)
+         (shiftf *** ** ** * (first values)))
+    (shiftf +++ ++ + -))
   (values-list /))
 
 (defun simple-repl (&key (prompt (lambda (stream) (format stream "~&* "))))
