@@ -516,7 +516,7 @@ to standard output, followed by a newline (for aesthetic purposes only).
 @ To pull a request off the wire, we'll use the Lisp reader, but in a very
 careful way. We start by collecting the characters that comprise the
 message using the Lisp reader with |*read-suppress*| bound to true; that
-should catch the most basix syntax errors. Then we'll peek at the first
+should catch the most basic syntax errors. Then we'll peek at the first
 character so we can handle the abbreviated request syntax described above.
 If it's a fully parenthesized message, we try to read the code and tag of
 the message---if we can't get those, then we can't even send a proper error
@@ -529,8 +529,12 @@ by ignoring the whole message).
 
 @l
 (defun read-request (&optional (stream *standard-input*))
-  (with-input-from-string ;
-      (*standard-input* @<Collect the characters that comprise this message@>)
+  (with-input-from-string
+      (*standard-input*
+       (with-output-to-string (string-stream)
+         (let ((*standard-input* (make-echo-stream stream string-stream))
+               (*read-suppress* t))
+           (read))))
     (macrolet ((read-typed-object (type)
                  (let ((object (gensym)))
                    `(let ((,object (read)))
@@ -545,23 +549,16 @@ by ignoring the whole message).
                       (args @<Try to read arguments until closing paren@>))
                  (list* code tag args))))))))
 
-@ @<Collect the characters...@>=
-(with-output-to-string (string-stream)
-  (let ((*standard-input* (make-echo-stream (or stream *standard-input*) ;
-                                            string-stream))
-        (*read-suppress* t))
-    (read)))
-
 @ Arguments are read one at at a time until we see the closing delimiter.
 If an error is signaled while attempting to read an argument, we'll send
 back an error response, but nevertheless decline to handle the condition.
 
 @<Try to read arguments...@>=
-(loop until (char= (peek-char t) #\))
-      collect (handler-bind ;
-                  ((reader-error (lambda (condition)
-                                   (send-error-message code tag condition))))
-                (read)))
+(flet ((send-error-response (condition)
+         (send-error-message code tag condition)))
+  (loop until (char= (peek-char t) #\))
+        collect (handler-bind ((reader-error #'send-error-response))
+                  (read))))
 
 @ SBCL's reporting functions for reader errors can themselves signal
 errors, even for offences as minor as attempting to report an error about
