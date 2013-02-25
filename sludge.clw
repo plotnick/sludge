@@ -329,16 +329,36 @@ is halted, so no new client connections will be accepted.
 @l
 (defun start-server (&rest args &key address (repl 'main-loop) (spawn t) ;
                      once-only &allow-other-keys)
+  @<Offer to shut down an already-running server@>
   (let ((server (apply #'make-server-socket address :allow-other-keys t args)))
-    (flet ((serve ()
+    (flet ((serve () ;
              (server-loop server repl :spawn spawn :once-only once-only)))
       (if spawn
           (setq *server* (make-thread #'serve :name "SLUDGE server"))
-          (serve)))))
+          (let ((*server* *current-thread*))
+            (serve))))))
 
 @ @<Global variables@>=
 (defvar *server* nil
   "The current SLUDGE server.")
+
+@ One could run more than one instance of the server per Lisp process, but
+there's no particular reason to do so, and it isn't expected to be a common
+practice.
+
+@<Offer to shut down...@>=
+(when (and spawn *server* (ignore-errors (thread-alive-p *server*)))
+  (restart-case (cerror "Ignore it." 'server-already-running :thread *server*)
+    (shutdown (&optional (server *server*))
+      :report "Shut it down."
+      (stop-server server))))
+
+@ @<Condition classes@>=
+(define-condition server-already-running ()
+  ((thread :reader server-thread :initarg :thread))
+  (:report (lambda (condition stream)
+             (format stream "A server is already running: ~A." ;
+                     (server-thread condition)))))
 
 @ This somewhat violent and crude implementation of |stop-server| at least
 has the advantage of simplicity. Less harsh solutions that do not add undue
