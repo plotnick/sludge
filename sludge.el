@@ -223,8 +223,12 @@ connection (i.e., the one from which all others will be cloned)."
                  (remhash request-code (sludge-pending-requests process))))
               (t (error "Unexpected tag in response: %s" response)))))))
 
+(defun sludge-format-request (request)
+  (let ((print-quoted t))
+    (format "%s\n" request)))
+
 (defun sludge-send-request (process request)
-  (process-send-string process (sludge-log (format "%S\n" request))))
+  (process-send-string process (sludge-log (sludge-format-request request))))
 
 (defun sludge-async-request (process code args ok &optional err)
   (unless (and (setq process (or process (sludge-master-process)))
@@ -326,7 +330,7 @@ Intended to be used as a value for `eldoc-documentation-function'."
   (setq fn (ensure-symbol fn))
   (sludge-cache-arglist fn)
   (sludge-async-request sludge-process
-                        :arglist (list fn)
+                        :arglist (list (list 'quote fn))
                         (lambda (arglist)
                           (sludge-cache-arglist fn arglist)
                           (eldoc-message (make-arglist-string fn arglist)))
@@ -434,9 +438,9 @@ Makes no attempt to deal with potential numbers or macro characters."
 ;;;; Very simple symbol completion.
 
 (defun sludge-symbol-completions (symbol)
-  (mapcar 'symbol-name
-          (sludge-request sludge-process
-                          :symbol-completions (upcase (ensure-string symbol)))))
+  (sludge-request sludge-process
+                  :symbol-completions
+                  (list 'quote (ensure-symbol symbol))))
 
 (defun sludge-completion-at-point ()
   (let* ((bounds (bounds-of-thing-at-point 'symbol))

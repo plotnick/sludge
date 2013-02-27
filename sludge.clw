@@ -531,7 +531,8 @@ establish handlers that can cope with such errors in a sensible way (e.g.,
 by ignoring the whole message).
 
 @l
-(defun read-request (&optional (stream *standard-input*))
+(defun read-request (&optional (stream *standard-input*) &aux ;
+                     (*readtable* *request-readtable*))
   (with-input-from-string
       (*standard-input*
        (with-output-to-string (string-stream)
@@ -562,6 +563,295 @@ back an error response, but nevertheless decline to handle the condition.
   (loop until (char= (peek-char t) #\))
         collect (handler-bind ((reader-error #'send-error-response))
                   (read))))
+
+@ Two of the main reasons for this system's existence are arglist display
+and symbol completion. We'll come to the actual handling of these shortly,
+but for now we'll stick to what's required to read the arguments to such
+requests. The issue is that in both cases, there's a chance that the
+primary argument will not be the name of any interned symbol. (The
+probability is low to moderate in the first case; e.g., the user may have
+paused in typing the name of a symbol when the arglist request is issued.
+But there's a very high probability indeed in the second case---otherwise,
+what's the point of completion?) If we were to just use |read| on such an
+incomplete symbol name, the effect would be to (1)~intern a symbol that we
+probably don't want, and (2)~lose information about whether and what kind
+of a package prefix was specified. Neither is desirable in this
+application.
+
+Our workaround is to repurpose the quote mark as a `raw symbol' marker:
+the token following the \.{'} is read and parsed according to the normal
+rules, but is not immediately interned. Instead, an instance of |raw-symbol|
+is returned, which preserves all of the information about the symbol normally
+discarded by the reader.
+
+We can think of the raw symbol structures as consisting primarily of two
+sets of slots, each representing a different aspect of the raw symbol.
+The first is the `parsed' version: normalized (i.e., without escapes),
+case-folded package and symbol names with a boolean flag denoting internal
+access. The second is a `split' version of the original token, consisting
+of the raw package prefix, markers, and symbol name. We'll have occasion
+to use both sets, especially when we get to symbol completion.
+
+The last slot, |print-case|, is used to help transform the case of symbol
+names back to the case given on input.
+
+@l
+(defstruct raw-symbol
+  package internal name ; parsed
+  prefix markers suffix ; split
+  (print-case :downcase))
+
+@<Define token reading routines@>
+@<Define symbol parsing routines@>
+
+(defun read-raw-symbol (stream char)
+  (declare (ignore char))
+  (parse-symbol (read-token stream)))
+
+(set-macro-character #\' #'read-raw-symbol nil *request-readtable*)
+
+@ @<Glob...@>=
+(defvar *request-readtable* (copy-readtable nil))
+
+@ If Common Lisp provided a |read-token| function, programs that need to
+analyze Lisp source code would be much easier to write than they currently
+are. Unfortunately, it doesn't, so we'll need to roll our own. We'll start
+with a few helper routines.
+
+@ The predicate |whitespacep| determines whether or not a given character
+should be treated as whitespace. Note, however, that this routine does
+not---and can not, at least not portably---examine the current readtable
+to determine which characters currently have ${\it whitespace}_2$ syntax.
+
+@<Define token reading...@>=
+(defun whitespacep (char)
+  (find char *whitespace* :test #'char=))
+
+@ Only the characters named `Newline' and `Space' are required to be
+present in a conforming Common Lisp implementation, but most also
+support the semi-standard names `Tab', `Linefeed', `Return', and~`Page'.
+Any of these that are supported should be considered whitespace characters.
+
+@<Glob...@>=
+(defparameter *whitespace*
+  (coerce (remove-duplicates
+           (remove nil (mapcar #'name-char ;
+                               '("Newline" "Space" "Tab" ;
+                                 "Linefeed" "Return" "Page"))))
+          'string))
+
+@ Our strategy for reading a token is to let the Lisp reader do the bulk
+of the work by calling |read| with |*read-suppress*| bound to true, and
+to catch the characters that it picks up using an echo stream. The only
+tricky bit is determining whether or not to include the last character
+so echoed: it could be a delimiter, in which case we don't want it.
+
+@<Define token reading...@>=
+(defun token-delimiter-p (char)
+  (declare (type character char))
+  (or (whitespacep char)
+      (multiple-value-bind (function non-terminating-p) ;
+          (get-macro-character char)
+        (and function (not non-terminating-p)))))
+
+(defun read-token (stream)
+  (let* ((chars (with-output-to-string (string-stream)
+                  (let ((echo-stream (make-echo-stream stream string-stream))
+                        (*read-suppress* t))
+                    (read echo-stream))))
+         (n (length chars)))
+    (subseq chars 0 (if (token-delimiter-p (char chars (1- n))) (1- n) n))))
+
+@ Now that we can read tokens, we turn to parsing them as symbols.
+Symbol-designating tokens consist of three parts: an optional package
+prefix, up to two package markers, and a symbol name (see~\S2.3.5 of the
+Common Lisp standard for the exact rules). We assume that \.{:} is the
+package marker, \.{\\} is the (unique) single escape character, and
+\.{\char'174} is the (unique) multiple escape character. We completely
+ignore the whole notion of potential numbers.
+
+@<Define symbol parsing...@>=
+(defun parse-symbol (token &aux (token (string token)))
+  (do* ((i 0 (1+ i))
+        (n (length token))
+        (buf (make-array n :element-type 'character :fill-pointer 0))
+        (single-escape) ; escape the next character
+        (multiple-escape) ; escape the following characters
+        (escaped '()) ; list of escaped indices
+        (markers '()) ; list of package marker indices (at most 2)
+        (offset 0) ; difference between normalized and raw indices
+        (all-upper t) ; unescaped character case
+        (all-lower t))
+       ((= i n) (setq escaped (nreverse escaped)
+                      markers (nreverse markers))
+                @<Case-fold the unescaped characters in |buf|@>
+                @<Construct and return a |raw-symbol| instance@>)
+    (let ((char (char token i)))
+      (cond (single-escape
+             (push (vector-push char buf) escaped)
+             (setq single-escape nil))
+            ((char= char #\\)
+             (setq single-escape t))
+            ((char= char #\|)
+             (setq multiple-escape (not multiple-escape)))
+            (multiple-escape
+             (push (vector-push char buf) escaped))
+            ((char= char #\:)
+             (let ((marker (vector-push char buf)))
+               (when (or (> (length markers) 1) ;
+                         (and (first markers) ;
+                              (/= marker (1+ (first markers)))))
+                 (error "Too many colons in ~S." token))
+               (push marker markers)
+               (setq offset (- marker i))))
+            (t (vector-push char buf)
+               (when (both-case-p char)
+                 (if (upper-case-p char)
+                     (setq all-lower nil)
+                     (setq all-upper nil))))))))
+
+@ @<Construct and return...@>=
+(let ((print-case (if all-lower :downcase *print-case*)))
+  (if markers
+      (destructuring-bind (i &optional (j i)) markers
+        (make-raw-symbol :package (if (plusp i) (subseq buf 0 i) "KEYWORD")
+                         :internal (string= (subseq buf i (1+ j)) "::")
+                         :name (subseq buf (1+ j))
+                         :prefix (subseq token 0 (- i offset))
+                         :markers (subseq token (- i offset) (1+ (- j offset)))
+                         :suffix (subseq token (1+ (- j offset)))
+                         :print-case print-case))
+      (make-raw-symbol :name buf :suffix token :print-case print-case)))
+
+@t@l
+(deftest (parse-symbol bare)
+  (equalp (parse-symbol "foo")
+          (make-raw-symbol :name "FOO" :suffix "foo"))
+  t)
+
+(deftest (parse-symbol keyword)
+  (equalp (parse-symbol ":foo")
+          (make-raw-symbol :package "KEYWORD" :name "FOO"
+                           :prefix "" :markers ":" :suffix "foo"))
+  t)
+
+(deftest (parse-symbol external)
+  (equalp (parse-symbol "foo:bar")
+          (make-raw-symbol :package "FOO" :name "BAR"
+                           :prefix "foo" :markers ":" :suffix "bar"))
+  t)
+
+(deftest (parse-symbol internal)
+  (equalp (parse-symbol "FOO::BAR")
+          (make-raw-symbol :package "FOO" :internal t :name "BAR"
+                           :prefix "FOO" :markers "::" :suffix "BAR"
+                           :print-case :upcase))
+  t)
+
+(deftest (parse-symbol escaped)
+  (equalp (parse-symbol "f\\oo|::barbaz|::G\\:rack")
+          (make-raw-symbol :package "FoO::barbaz"
+                           :internal t
+                           :name "G:RACK"
+                           :prefix "f\\oo|::barbaz|"
+                           :markers "::"
+                           :suffix "G\\:rack"
+                           :print-case :upcase))
+  t)
+
+(deftest (parse-symbol error)
+  (handler-case (parse-symbol ":foo:")
+    (error () t))
+  t)
+
+@ Next we implement the case folding rules specified by \S23.1.2 of the
+{\sc ansi} Common Lisp standard (`Effect of Readtable Case on the Lisp
+Reader').
+
+@<Case-fold...@>=
+(labels ((escaped (i) (member i escaped :test #'=))
+         (fold (transform)
+           (loop for ch across buf and i upfrom 0
+                 unless (escaped i)
+                   do (setf (char buf i) (funcall transform ch))))
+         (lower () (fold #'char-downcase))
+         (raise () (fold #'char-upcase)))
+  (ecase (readtable-case *readtable*)
+    (:upcase (raise))
+    (:downcase (lower))
+    (:preserve)
+    (:invert (cond (all-lower (raise))
+                   (all-upper (lower))))))
+
+@t@l
+(defun parse-symbol-with-case (token case)
+  (let ((*readtable* (copy-readtable nil)))
+    (setf (readtable-case *readtable*) case)
+    (parse-symbol token)))
+
+(deftest (parse-symbol :downcase)
+  (equalp (parse-symbol-with-case "FOO:\\XBAR" :downcase)
+          (make-raw-symbol :package "foo" :name "Xbar"
+                           :prefix "FOO" :markers ":" :suffix "\\XBAR"
+                           :print-case :upcase))
+  t)
+
+(deftest (parse-symbol :preserve)
+  (equalp (parse-symbol-with-case "FOO:\\xbar" :preserve)
+          (make-raw-symbol :package "FOO" :name "xbar"
+                           :prefix "FOO" :markers ":" :suffix "\\xbar"
+                           :print-case :upcase))
+  t)
+
+(deftest (parse-symbol :invert upper)
+  (equalp (parse-symbol-with-case "FOO:\\XBAR" :invert)
+          (make-raw-symbol :package "foo" :name "Xbar"
+                           :prefix "FOO" :markers ":" :suffix "\\XBAR"
+                           :print-case :upcase))
+  t)
+
+(deftest (parse-symbol :invert lower)
+  (equalp (parse-symbol-with-case "foo:\\xbar" :invert)
+          (make-raw-symbol :package "FOO" :name "xBAR"
+                           :prefix "foo" :markers ":" :suffix "\\xbar"))
+  t)
+
+(deftest (parse-symbol :invert mixed)
+  (equalp (parse-symbol-with-case "Foo:\\xBar" :invert)
+          (make-raw-symbol :package "Foo" :name "xBar"
+                           :prefix "Foo" :markers ":" :suffix "\\xBar"
+                           :print-case :upcase))
+  t)
+
+@ We look up raw symbols using |find-raw-symbol|, which signals an error if
+the designated symbol does not exist.
+
+@l
+(defun find-package-or-lose (package-name)
+  (if package-name
+      (or (find-package package-name)
+          (error 'no-such-package-error :package package-name))
+      *package*))
+
+(defun find-raw-symbol (raw-symbol)
+  (let ((package (find-package-or-lose (raw-symbol-package raw-symbol)))
+        (name (raw-symbol-name raw-symbol)))
+    (or (find-symbol name package)
+        (error 'no-such-symbol-error :package package :name name))))
+
+@ @<Condition classes@>=
+(define-condition no-such-package-error (package-error)
+  ()
+  (:report (lambda (condition stream)
+             (format stream "No such package: ~A." ;
+                     (package-error-package condition)))))
+
+(define-condition no-such-symbol-error (package-error)
+  ((symbol-name :accessor package-error-symbol-name :initarg :name))
+  (:report (lambda (condition stream)
+             (format stream "No such symbol in package ~A: ~A."
+                     (package-name (package-error-package condition))
+                     (package-error-symbol-name condition)))))
 
 @ SBCL's reporting functions for reader errors can themselves signal
 errors, even for offences as minor as attempting to report an error about
@@ -669,7 +959,10 @@ request returns the lambda list of the indicated function.
 
 @l
 (define-request-handler :arglist (function)
-  (list (function-lambda-list function)))
+  (let ((function (typecase function
+                    (raw-symbol (find-raw-symbol function))
+                    (t function))))
+    (list (function-lambda-list function))))
 
 @ Other pieces of documentation that might be requested are docstrings
 and object descriptions.
@@ -688,18 +981,9 @@ symbol.
 
 @l
 (define-request-handler :in-package (name)
-  (let ((package (find-package name)))
-    (if package
-        (progn (setq *package* package)
-               (package-name package))
-        (error 'no-such-package-error :package name))))
-
-@ @<Condition classes@>=
-(define-condition no-such-package-error (package-error)
-  ()
-  (:report (lambda (condition stream)
-             (format stream "No such package: ~A" ;
-                     (package-error-package condition)))))
+  (let ((package (find-package-or-lose name)))
+    (setq *package* package)
+    (package-name package)))
 
 @ Now we'll define the protocol message that implements the second main
 reason for this system's existence: Lisp symbol completion.
@@ -712,18 +996,32 @@ reason for this system's existence: Lisp symbol completion.
          (let ((n (min l m)))
            (string-equal prefix string :end1 n :end2 n)))))
 
-(defun match-symbols (name &optional external-p (package *package*))
-  (with-package-iterator (next-symbol package :internal :external :inherited)
-    (let (matches)
-      (loop
-        (multiple-value-bind (more symbol accessibility) (next-symbol)
-          (unless more (return (sort (remove-duplicates matches) #'string<)))
-          (when (and (if external-p (not (eq accessibility :internal)) t)
-                     (string-prefix-p name symbol))
-            (push symbol matches)))))))
+(defun match-symbols (raw-symbol)
+  (let* ((package-name (raw-symbol-package raw-symbol))
+         (internal (raw-symbol-internal raw-symbol))
+         (package-prefix (raw-symbol-prefix raw-symbol))
+         (markers (raw-symbol-markers raw-symbol))
+         (name (raw-symbol-name raw-symbol))
+         (*package* (find-package-or-lose package-name))
+         (*print-case* (raw-symbol-print-case raw-symbol)))
+    (labels ((format-symbol (symbol)
+               (format nil "~@[~A~]~@[~A~]~A" package-prefix markers symbol)))
+      (with-package-iterator (next *package* :internal :external :inherited)
+        (let ((matches '()))
+          (loop
+            (multiple-value-bind (more symbol accessibility) (next)
+              (unless more
+                (return (sort (mapcar #'format-symbol ;
+                                      (remove-duplicates matches)) ;
+                              #'string<)))
+              (when (and (or internal
+                             (not package-name)
+                             (eq accessibility :external))
+                         (string-prefix-p name symbol))
+                (push symbol matches)))))))))
 
-(define-request-handler :symbol-completions (name &optional external-p)
-  (match-symbols name external-p))
+(define-request-handler :symbol-completions (raw-symbol)
+  (match-symbols raw-symbol))
 
 @t@l
 (deftest string-prefix-p
