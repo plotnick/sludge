@@ -380,10 +380,8 @@ Makes no attempt to deal with potential numbers or macro characters."
 
 (defun sludge-pretty-arglist (object)
   "Recursively drop package prefixes from symbols in the given arglist."
-  (cond ((symbolp object)
-         (drop-package-prefix object))
-        ((listp object)
-         (maptree #'sludge-pretty-arglist object))
+  (cond ((symbolp object) (drop-package-prefix object))
+        ((listp object) (maptree #'sludge-pretty-arglist object))
         (t object)))
 
 (defun make-arglist-string (fn arglist)
