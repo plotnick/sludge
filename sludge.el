@@ -150,6 +150,13 @@ connection (i.e., the one from which all others will be cloned)."
                                 :filter 'sludge-process-reply))
          (t (error "Can't connect to SLUDGE server at %s" address)))))
 
+(defun sludge-log (message)
+  "Record the given message in the log buffer and return it."
+  (with-current-buffer (get-buffer-create "*sludge-log*")
+    (goto-char (point-max))
+    (insert message))
+  message)
+
 ;;;; The SLUDGE Protocol.
 
 ;;; These must match the definitions on the server side, or else there will
@@ -217,7 +224,7 @@ connection (i.e., the one from which all others will be cloned)."
               (t (error "Unexpected tag in response: %s" response)))))))
 
 (defun sludge-send-request (process request)
-  (process-send-string process (format "%S\n" request)))
+  (process-send-string process (sludge-log (format "%S\n" request))))
 
 (defun sludge-async-request (process code args ok &optional err)
   (unless (and (setq process (or process (sludge-master-process)))
@@ -241,6 +248,7 @@ connection (i.e., the one from which all others will be cloned)."
 (defun sludge-process-reply (process string)
   "The SLUDGE process filter function.
 Reads a response from the Lisp and handles it."
+  (sludge-log string)
   (let ((form (read string)))
     (cond ((and (consp form)
                 (>= (length form) 3)

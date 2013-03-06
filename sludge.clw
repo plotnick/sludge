@@ -401,25 +401,8 @@ defined our protocol interface.
 
 @l
 (defun main-loop ()
-  (let ((*read-eval* nil)
-        (*standard-input* @<Echo standard input to the message log@>)
-        (*standard-output* @<Echo standard output to the message log@>))
+  (let ((*read-eval* nil))
     (loop @<Read and handle a request@>)))
-
-@ Before beginning to process requests, we'll rebind standard input and output
-to streams that echo to the output stream in |*log-output*|. The default is
-a bottomless sink, but if you set it to a stream like |*error-output*|, you
-can watch the protocol traffic.
-
-@<Global variables@>=
-(defvar *log-output* (make-broadcast-stream)
-  "The output stream to which SLUDGE messages should be logged.")
-
-@ @<Echo standard input...@>=
-(make-echo-stream *standard-input* (make-synonym-stream '*log-output*))
-
-@ @<Echo standard output...@>=
-(make-broadcast-stream *standard-output* (make-synonym-stream '*log-output*))
 
 @1*Protocol definition. The \sludge\ protocol may be informally described
 as follows. Sequences of octets (8-bit bytes) are interpreted as representing
