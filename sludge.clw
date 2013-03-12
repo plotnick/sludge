@@ -497,8 +497,9 @@ looks like a request message.
           (typep '(:foo :foo 0 t nil t) 'response-message))
   t nil nil)
 
-@ Sending messages is simple: we just print the character representation
-to standard output, followed by a newline (for aesthetic purposes only).
+@1*Sending messages. Sending messages is simple: we just print the
+character representation to standard output, followed by a newline (for
+aesthetic purposes only).
 
 @l
 (defun send-message (message)
@@ -516,14 +517,14 @@ to standard output, followed by a newline (for aesthetic purposes only).
                           (type-of condition)
                           (princ-to-string condition))))
 
-@ To pull a request off the wire, we'll use the Lisp reader, but in a very
-careful way. We start by collecting the characters that comprise the
-message using the Lisp reader with |*read-suppress*| bound to true; that
-should catch the most basic syntax errors. Then we'll peek at the first
-character so we can handle the abbreviated request syntax described above.
-If it's a fully parenthesized message, we try to read the code and tag of
-the message---if we can't get those, then we can't even send a proper error
-response---followed by the arguments.
+@1*Reading messages. To pull a request off the wire, we'll use the Lisp
+reader, but in a very careful way. We start by collecting the characters
+that comprise the message using the Lisp reader with |*read-suppress*|
+bound to true; that should catch the most basic syntax errors. Then we'll
+peek at the first character so we can handle the abbreviated request syntax
+described above. If it's a fully parenthesized message, we try to read the
+code and tag of the message---if we can't get those, then we can't even
+send a proper error response---followed by the arguments.
 
 This routine will signal errors if it detects any abnormalities in the
 syntax of the message; it is expected that higher-level routines will
@@ -564,19 +565,33 @@ back an error response, but nevertheless decline to handle the condition.
         collect (handler-bind ((reader-error #'send-error-response))
                   (read))))
 
-@ Two of the main reasons for this system's existence are arglist display
-and symbol completion. We'll come to the actual handling of these shortly,
-but for now we'll stick to what's required to read the arguments to such
-requests. The issue is that in both cases, there's a chance that the
-primary argument will not be the name of any interned symbol. (The
+@t We'll frequently read requests from strings during tests, so we'll
+define a little helper function for that.
+
+@l
+(defun read-request-from-string (string)
+  (with-input-from-string (stream string)
+    (read-request stream)))
+
+@t@l
+(deftest read-request
+  (values (equal (read-request-from-string ":foo") '(:foo 0))
+          (equal (read-request-from-string "(:foo 0)") '(:foo 0))
+          (null (read-request-from-string "<invalid>")))
+  t t t)
+
+@2*Raw symbols. Two of the main reasons for this system's existence are
+arglist display and symbol completion. We'll come to the actual handling
+of such requests shortly, but for now we'll stick to what's required to
+read the arguments. The issue is that in both cases, there's a chance that
+the primary argument will not be the name of any interned symbol. The
 probability is low to moderate in the first case; e.g., the user may have
 paused in typing the name of a symbol when the arglist request is issued.
 But there's a very high probability indeed in the second case---otherwise,
-what's the point of completion?) If we were to just use |read| on such an
+what's the point of completion? If we were to just use |read| on such an
 incomplete symbol name, the effect would be to (1)~intern a symbol that we
 probably don't want, and (2)~lose information about whether and what kind
-of a package prefix was specified. Neither is desirable in this
-application.
+of a package prefix was specified. Neither is desirable in this application.
 
 Our workaround is to repurpose the quote mark as a `raw symbol' marker:
 the token following the \.{'} is read and parsed according to the normal
@@ -889,23 +904,8 @@ match the symbol's accessibility in the designated package.
                      (package-error-symbol-name condition)
                      (package-name (package-error-package condition))))))
 
-@t We'll frequently read requests from strings during tests, so we'll
-define a little helper function for that.
-
-@l
-(defun read-request-from-string (string)
-  (with-input-from-string (stream string)
-    (read-request stream)))
-
-@t@l
-(deftest read-request
-  (values (equal (read-request-from-string ":foo") '(:foo 0))
-          (equal (read-request-from-string "(:foo 0)") '(:foo 0))
-          (null (read-request-from-string "<invalid>")))
-  t t t)
-
-@ Request handlers are methods of the generic function |handle-request|,
-specialized on request codes.
+@1*Handling requests. Request handlers are methods of the generic function
+|handle-request|, |eql|-specialized on request codes.
 
 @l
 (defgeneric handle-request (code tag &rest args))
@@ -948,10 +948,10 @@ picks up with the next one.
         (error (condition)
           (send-error-message code tag condition))))))
 
-@1*Request handlers. These tend to follow a similar pattern, so we'll use a
-defining macro that abstracts it a bit. The request arguments are bound
-using |destructuring-bind| to the parameters specified by |lambda-list|,
-and the body should return a designator for a list of response arguments,
+@ Methods for |handle-request| tend to follow a similar pattern, so we'll
+provide a defining macro that abstracts it a bit. The request arguments are
+bound using |destructuring-bind| to the parameters specified by |lambda-list|.
+The body should return a designator for a list of response arguments,
 from which a response message will be constructed and sent. We'll leave it
 up to the main loop to handle any errors by constructing and sending error
 responses.
