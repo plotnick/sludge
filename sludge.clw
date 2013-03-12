@@ -824,7 +824,8 @@ Reader').
   t)
 
 @ We look up raw symbols using |find-raw-symbol|, which signals an error if
-the designated symbol does not exist.
+either the designated symbol does not exist or the specified access doesn't
+match the symbol's accessibility in the designated package.
 
 @l
 (defun find-package-or-lose (package-name)
@@ -833,11 +834,39 @@ the designated symbol does not exist.
           (error 'no-such-package-error :package package-name))
       *package*))
 
+(defun raw-symbol-accessible-p (raw-symbol accessibility)
+  (or (null (raw-symbol-package raw-symbol))
+      (raw-symbol-internal raw-symbol)
+      (eq accessibility :external)))
+
 (defun find-raw-symbol (raw-symbol)
   (let ((package (find-package-or-lose (raw-symbol-package raw-symbol)))
         (name (raw-symbol-name raw-symbol)))
-    (or (find-symbol name package)
-        (error 'no-such-symbol-error :package package :name name))))
+    (multiple-value-bind (symbol status) (find-symbol name package)
+      (unless symbol
+        (error 'no-such-symbol-error :package package :name name))
+      (unless (raw-symbol-accessible-p raw-symbol status)
+        (cerror "Use the symbol anyway."
+                'symbol-accessibility-error :package package :name name))
+      (values symbol status))))
+
+@t Don't name a package \.{"XXXXXX"}, ok?
+
+@l
+(deftest (find-raw-symbol ok)
+  (find-raw-symbol (parse-symbol "sludge::find-raw-symbol"))
+  find-raw-symbol
+  :internal)
+
+(deftest (find-raw-symbol no-package-error)
+  (handler-case (find-raw-symbol (parse-symbol "xxxxxx:foo"))
+    (package-error () t))
+  t)
+
+(deftest (find-raw-symbol accessibility-error)
+  (handler-case (find-raw-symbol (parse-symbol "sludge:find-raw-symbol"))
+    (package-error () t))
+  t)
 
 @ @<Condition classes@>=
 (define-condition no-such-package-error (package-error)
@@ -849,9 +878,16 @@ the designated symbol does not exist.
 (define-condition no-such-symbol-error (package-error)
   ((symbol-name :accessor package-error-symbol-name :initarg :name))
   (:report (lambda (condition stream)
-             (format stream "No such symbol in package ~A: ~A."
-                     (package-name (package-error-package condition))
-                     (package-error-symbol-name condition)))))
+             (format stream "There is no symbol named ~S in package ~A."
+                     (package-error-symbol-name condition)
+                     (package-name (package-error-package condition))))))
+
+(define-condition symbol-accessibility-error (package-error)
+  ((symbol-name :accessor package-error-symbol-name :initarg :name))
+  (:report (lambda (condition stream)
+             (format stream "The symbol ~S is not external in package ~A."
+                     (package-error-symbol-name condition)
+                     (package-name (package-error-package condition))))))
 
 @ SBCL's reporting functions for reader errors can themselves signal
 errors, even for offences as minor as attempting to report an error about
@@ -998,7 +1034,6 @@ reason for this system's existence: Lisp symbol completion.
 
 (defun match-symbols (raw-symbol)
   (let* ((package-name (raw-symbol-package raw-symbol))
-         (internal (raw-symbol-internal raw-symbol))
          (package-prefix (raw-symbol-prefix raw-symbol))
          (markers (raw-symbol-markers raw-symbol))
          (name (raw-symbol-name raw-symbol))
@@ -1014,9 +1049,7 @@ reason for this system's existence: Lisp symbol completion.
                 (return (sort (mapcar #'format-symbol ;
                                       (remove-duplicates matches)) ;
                               #'string<)))
-              (when (and (or internal
-                             (not package-name)
-                             (eq accessibility :external))
+              (when (and (raw-symbol-accessible-p raw-symbol accessibility)
                          (string-prefix-p name symbol))
                 (push symbol matches)))))))))
 
