@@ -889,19 +889,6 @@ match the symbol's accessibility in the designated package.
                      (package-error-symbol-name condition)
                      (package-name (package-error-package condition))))))
 
-@ SBCL's reporting functions for reader errors can themselves signal
-errors, even for offences as minor as attempting to report an error about
-a stream that has since been closed. Whence the careful error handling
-in our own report function, which implicitly relies on theirs.
-
-@<Condition classes@>=
-(define-condition unreadable-object (error)
-  ((error :reader unreadable-object-error :initarg :error))
-  (:report (lambda (condition stream)
-             (or (ignore-errors
-                   (princ (unreadable-object-error condition) stream))
-                 (format stream "Error attempting to read object.")))))
-
 @t We'll frequently read requests from strings during tests, so we'll
 define a little helper function for that.
 
