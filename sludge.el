@@ -33,7 +33,7 @@ process id will be provided as argument.")
   (format sludge-default-address-format (process-id (sludge-lisp-proc))))
 
 (defun sludge-mode (&optional arg)
-    "Toggle SLUDGE mode.
+    "Toggle background Lisp interaction mode.
 The usual minor mode convention applies for the argument: a positive numeric
 argument means enable, negative means disable, and no argument toggles.
 
