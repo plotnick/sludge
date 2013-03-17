@@ -22,7 +22,7 @@
    "Connection to SLUDGE server."))
 
 (defvar sludge-poll-rate 0.1)
-(defvar sludge-max-retries 5)
+(defvar sludge-max-retries 15)
 
 (defvar sludge-default-address-format "/tmp/sludge-%d"
   "Format string used to generate the default SLUDGE address.
