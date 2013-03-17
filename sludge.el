@@ -293,14 +293,15 @@ Reads a response from the Lisp and handles it."
 
 ;;;; Arglist handling.
 
-;;; We keep a per-buffer, one-element cache of the most recently fetched
-;;; arglist. This should help reduce request traffic in many cases.
+;;; Arglists come back as pre-formatted strings. We keep a per-buffer,
+;;; one-element cache of the most recently fetched arglist, which helps
+;;; reduce request traffic in many cases.
 
-(defun sludge-cache-arglist (fn &rest arglist)
+(defun sludge-cache-arglist (fn arglist)
   (when sludge-process
     (process-put sludge-process
                  'sludge-last-arglist
-                 (nconc (list fn) arglist))))
+                 (cons fn arglist))))
 
 (defun sludge-last-arglist ()
   (when sludge-process
@@ -318,82 +319,24 @@ Intended to be used as a value for `eldoc-documentation-function'."
         (let ((cache (sludge-last-arglist)))
           (if (eq symbol (car cache))
               (when (cdr cache)
-                (eldoc-message (apply #'make-arglist-string cache)))
+                (eldoc-message (cdr cache)))
               (sludge-show-arglist symbol)))))))
 
 (defun sludge-show-arglist (&optional fn)
   (interactive (lisp-symprompt "Function argument list" (lisp-fn-called-at-pt)))
   (setq fn (ensure-symbol fn))
-  (sludge-cache-arglist fn)
+  (sludge-cache-arglist fn nil) ; placeholder
   (sludge-async-request sludge-process
                         :arglist (list (list 'quote fn))
                         (lambda (arglist)
                           (sludge-cache-arglist fn arglist)
-                          (eldoc-message (make-arglist-string fn arglist)))
+                          (eldoc-message arglist))
                         #'ignore))
 
 (defun ensure-string (object)
   (cond ((stringp object) object)
         ((symbolp object) (symbol-name object))
         (t (error "Not a string designator: %S" object))))
-
-(defun parse-cl-symbol (token)
-  "Break the given token up into a package prefix and a symbol name
-and return them as a single cons cell.
-
-Assumes that `:' is the package marker, `\\' is the (unique) single
-escape character, and `|' is the (unique) multiple escape character.
-Makes no attempt to deal with potential numbers or macro characters."
-  (let ((token (ensure-string token))
-        (escaping nil)
-        (marker (cons nil nil))
-        (i 0))
-    (while (< i (length token))
-      (let ((c (aref token i)))
-        (cond ((char-equal c ?\\)
-               (setq i (1+ i)))
-              ((char-equal c ?|)
-               (setq escaping (not escaping)))
-              ((and (not escaping) (char-equal c ?:))
-               (cond ((null (car marker))
-                      (rplaca marker i))
-                     ((and (null (cdr marker)) (= (car marker) (1- i)))
-                      (rplacd marker i))
-                     (t (error "Too many colons in %S" token))))))
-      (setq i (1+ i)))
-    (cond ((null (car marker)) (cons nil token))
-          ((zerop (car marker)) (cons "keyword" token))
-          (t (cons (substring token 0 (car marker))
-                   (substring token (1+ (or (cdr marker) (car marker)))))))))
-
-;;; This auxiliary function (shamelessly stolen from CLtL2, Appendix C) is
-;;; like `mapcar' but has two extra purposes: (1) it handles dotted lists;
-;;; (2) it tries to make the result share with the argument X as much as
-;;; possible.
-
-(defun maptree (fn x)
-  (if (atom x)
-      (funcall fn x)
-      (let ((a (funcall fn (car x)))
-            (d (maptree fn (cdr x))))
-        (if (and (eql a (car x)) (eql d (cdr x)))
-            x
-            (cons a d)))))
-
-(defun drop-package-prefix (symbol)
-  "Return just the symbol name, without any package prefix."
-  (condition-case nil
-      (intern (cdr (parse-cl-symbol symbol)))
-    (error symbol)))
-
-(defun sludge-pretty-arglist (object)
-  "Recursively drop package prefixes from symbols in the given arglist."
-  (cond ((symbolp object) (drop-package-prefix object))
-        ((listp object) (maptree #'sludge-pretty-arglist object))
-        (t object)))
-
-(defun make-arglist-string (fn arglist)
-  (format "%S" (cons fn (sludge-pretty-arglist arglist))))
 
 (defun sludge-setup-eldoc ()
   (set (make-local-variable 'eldoc-documentation-function)

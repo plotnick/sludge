@@ -981,11 +981,49 @@ responses.
 request returns the lambda list of the indicated function.
 
 @l
-(define-request-handler :arglist (function)
-  (let ((function (typecase function
-                    (raw-symbol (find-raw-symbol function))
-                    (t function))))
-    (list (function-lambda-list function))))
+@<Define arglist formatting routine@>
+
+(define-request-handler :arglist (operator)
+  (list (format-arglist operator
+                        (function-lambda-list (typecase operator
+                                                (raw-symbol ;
+                                                 (find-raw-symbol operator))
+                                                (t operator))))))
+
+@ An arglist may contain arbitrary Common Lisp forms as initializers.
+Some of those may be unreadable as Emacs Lisp forms (e.g., pathnames),
+so our safest choice is to simply format it nicely and send it down as
+a string. We'll use the pretty printer to elide the package prefix when
+printing parameters.
+
+@<Define arglist format...@>=
+(defparameter *arglist-dispatch-table* (copy-pprint-dispatch))
+
+(let ((*print-pprint-dispatch* *arglist-dispatch-table*))
+  (set-pprint-dispatch 'symbol
+                       (lambda (stream object)
+                         ;; Print the symbol without a package prefix.
+                         (let ((*package* (symbol-package object)))
+                           (write object :stream stream :pretty nil))))
+  (set-pprint-dispatch 'raw-symbol
+                       (lambda (stream object)
+                         ;; Raw symbols are ok to print with prefixes, since
+                         ;; they'll always be the operator.
+                         (format stream "~@[~A~]~@[~A~]~A"
+                                 (raw-symbol-prefix object)
+                                 (raw-symbol-markers object)
+                                 (raw-symbol-suffix object)))))
+
+(defun format-arglist (operator arglist)
+  (when arglist
+    (let ((*print-case* (typecase operator
+                          (raw-symbol (raw-symbol-print-case operator))
+                          (t :downcase)))
+          (*print-escape* t)
+          (*print-pretty* t)
+          (*print-pprint-dispatch* *arglist-dispatch-table*)
+          (*print-right-margin* most-positive-fixnum))
+      (format nil "(~W ~{~W~^ ~})" operator arglist))))
 
 @ Other pieces of documentation that might be requested are docstrings
 and object descriptions.
