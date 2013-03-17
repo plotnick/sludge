@@ -96,13 +96,20 @@ be made and used for background interaction with a Common Lisp system."
   (comint-send-string (or process (sludge-lisp-proc)) string))
 
 (defun sludge-start-server (address)
-  "Start the SLUDGE server in an inferior Lisp and connect to it.
-Sets the inferior Lisp buffer's `sludge-process' variable to the \"master\"
-connection (i.e., the one from which all others will be cloned)."
+  "Start the SLUDGE server in an inferior Lisp and poll for connection."
   (interactive (list (sludge-default-address)))
   (sludge-send-lisp-string (sludge-start-server-command address))
   (with-sludge-lisp-buffer
-    (setq sludge-process (sludge-try-connect address))))
+    (setq sludge-process ; will become master process
+          (or (catch 'connected
+                (dotimes (i sludge-max-retries)
+                  (sit-for sludge-poll-rate)
+                  (message "Polling %s" address)
+                  (let ((proc (ignore-errors (sludge-connect address))))
+                    (when proc
+                      (message "Connected to SLUDGE server at %s" address)
+                      (throw 'connected proc)))))
+              (error "Timed out connecting to SLUDGE server at %s" address)))))
 
 (defun sludge-stop-server ()
   "Stop the SLUDGE server and disconnect all clients."
@@ -116,19 +123,8 @@ connection (i.e., the one from which all others will be cloned)."
       (setq sludge-process nil))))
 
 (defun sludge-master-process ()
+  "Return the primary SLUDGE process."
   (ignore-errors (with-sludge-lisp-buffer sludge-process)))
-
-(defun sludge-try-connect (address)
-  "Repeatedly attempt to connect to the SLUDGE server at ADDRESS."
-  (or (catch 'connected
-        (dotimes (i sludge-max-retries)
-          (sit-for sludge-poll-rate)
-          (message "Polling %s" address)
-          (let ((proc (ignore-errors (sludge-connect address))))
-            (when proc
-              (message "Connected to SLUDGE server at %s" address)
-              (throw 'connected proc)))))
-      (error "Timed out connecting to SLUDGE server at %s" address)))
 
 (defun sludge-connect (address)
   "Connect to the SLUDGE server at ADDRESS."
