@@ -27,6 +27,7 @@ be simple enough to port to other implementations.
 @e
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (require "SB-BSD-SOCKETS")
+  (require "SB-INTROSPECT")
   (require "SB-POSIX"))
 @e
 (defpackage "SLUDGE"
