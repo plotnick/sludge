@@ -327,7 +327,7 @@ Intended to be used as a value for `eldoc-documentation-function'."
   (setq fn (ensure-symbol fn))
   (sludge-cache-arglist fn nil) ; placeholder
   (sludge-async-request sludge-process
-                        :arglist (list (list 'quote fn))
+                        :arglist (list (format "#\"%S\"" fn))
                         (lambda (arglist)
                           (sludge-cache-arglist fn arglist)
                           (eldoc-message arglist))
@@ -377,9 +377,8 @@ Intended to be used as a value for `eldoc-documentation-function'."
 ;;;; Very simple symbol completion.
 
 (defun sludge-symbol-completions (symbol)
-  (sludge-request sludge-process
-                  :symbol-completions
-                  (list 'quote (ensure-symbol symbol))))
+  (setq symbol (ensure-symbol symbol))
+  (sludge-request sludge-process :symbol-completions (format "#\"%S\"" symbol)))
 
 (defun sludge-completion-at-point ()
   (let* ((bounds (bounds-of-thing-at-point 'symbol))

@@ -594,22 +594,22 @@ incomplete symbol name, the effect would be to (1)~intern a symbol that we
 probably don't want, and (2)~lose information about whether and what kind
 of a package prefix was specified. Neither is desirable in this application.
 
-Our workaround is to repurpose the quote mark as a `raw symbol' marker:
-the token following the \.{'} is read and parsed according to the normal
-rules, but is not immediately interned. Instead, an instance of |raw-symbol|
-is returned, which preserves all of the information about the symbol normally
-discarded by the reader.
+Our solution is to introduce a new data structure which preserves the
+information present in the original (source) representation, but also
+makes it easy to find the designated symbol. We call these `raw symbols'.
 
-We can think of the raw symbol structures as consisting primarily of two
-sets of slots, each representing a different aspect of the raw symbol.
-The first is the `parsed' version: normalized (i.e., without escapes),
-case-folded package and symbol names with a boolean flag denoting internal
-access. The second is a `split' version of the original token, consisting
-of the raw package prefix, markers, and symbol name. We'll have occasion
-to use both sets, especially when we get to symbol completion.
-
-The last slot, |print-case|, is used to help transform the case of symbol
-names back to the case given on input.
+A raw symbol instance can be thought of having two sets of slots, each
+representing a different aspect of the raw symbol. The first is the
+`parsed' version: normalized (i.e., without escapes), case-folded package
+and symbol names with a boolean flag denoting internal access. The second
+is a `split' version of the original token, consisting of the raw package
+prefix, markers, and symbol name. (There's an additional slot, |print-case|,
+which is used to help transform the case of symbol names back to the case
+given on input; we can think of it as encoding information implicit in the
+split slots, but which we pick up during parsing.) The parsed slots make it
+easy to find the designated symbol; the split slots (plus |print-case|) make
+it easy to reconstruct the original source or variants thereof. We'll have
+occasion to use both sets, especially when we get to symbol completion.
 
 @l
 (defstruct raw-symbol
@@ -617,22 +617,21 @@ names back to the case given on input.
   prefix markers suffix ; split
   (print-case :downcase))
 
-@<Define token reading routines@>
-@<Define symbol parsing routines@>
+@ We'll define \.{\#"} as a reader macro for constructing raw symbols.
+The raw symbol is terminated by an unescaped \.{"} character.
 
-(defun read-raw-symbol (stream char)
-  (declare (ignore char))
-  (parse-symbol (read-token stream)))
+@l
+@<Define token reading utility routines@>
+@<Define raw symbol reading routine@>
 
-(set-macro-character #\' #'read-raw-symbol nil *request-readtable*)
+(defun raw-symbol-reader (stream subchar arg)
+  (declare (ignore arg))
+  (read-raw-symbol subchar stream t))
+
+(set-dispatch-macro-character #\# #\" #'raw-symbol-reader *request-readtable*)
 
 @ @<Glob...@>=
 (defvar *request-readtable* (copy-readtable nil))
-
-@ If Common Lisp provided a |read-token| function, programs that need to
-analyze Lisp source code would be much easier to write than they currently
-are. Unfortunately, it doesn't, so we'll need to roll our own. We'll start
-with a few helper routines.
 
 @ The predicate |whitespacep| determines whether or not a given character
 should be treated as whitespace. Note, however, that this routine does
@@ -646,21 +645,18 @@ to determine which characters currently have ${\it whitespace}_2$ syntax.
 @ Only the characters named `Newline' and `Space' are required to be
 present in a conforming Common Lisp implementation, but most also
 support the semi-standard names `Tab', `Linefeed', `Return', and~`Page'.
-Any of these that are supported should be considered whitespace characters.
 
 @<Glob...@>=
 (defparameter *whitespace*
   (coerce (remove-duplicates
            (remove nil (mapcar #'name-char ;
-                               '("Newline" "Space" "Tab" ;
-                                 "Linefeed" "Return" "Page"))))
+                               '("Newline" "Space" ;
+                                 "Tab" "Linefeed" "Return" "Page"))))
           'string))
 
-@ Our strategy for reading a token is to let the Lisp reader do the bulk
-of the work by calling |read| with |*read-suppress*| bound to true, and
-to catch the characters that it picks up using an echo stream. The only
-tricky bit is determining whether or not to include the last character
-so echoed: it could be a delimiter, in which case we don't want it.
+@ Portably determining whether or not a character is a token delimiter is
+possible, but tricky. We don't bother with such tricks here; we just assume
+that the only delimiters are whitespace and terminating macro characters.
 
 @<Define token reading...@>=
 (defun token-delimiter-p (char)
@@ -670,76 +666,102 @@ so echoed: it could be a delimiter, in which case we don't want it.
           (get-macro-character char)
         (and function (not non-terminating-p)))))
 
-(defun read-token (stream)
-  (let* ((chars (with-output-to-string (string-stream)
-                  (let ((echo-stream (make-echo-stream stream string-stream))
-                        (*read-suppress* t))
-                    (read echo-stream))))
-         (n (length chars)))
-    (subseq chars 0 (if (token-delimiter-p (char chars (1- n))) (1- n) n))))
+@ We'll use adjustable arrays with fill pointers as token buffers.
+The average length of the symbols exported by the \.{COMMON-LISP}
+package is about~12, so we'll start with that as an initial capacity.
 
-@ Now that we can read tokens, we turn to parsing them as symbols.
-Symbol-designating tokens consist of three parts: an optional package
-prefix, up to two package markers, and a symbol name (see~\S2.3.5 of the
-Common Lisp standard for the exact rules). We assume that \.{:} is the
-package marker, \.{\\} is the (unique) single escape character, and
-\.{\char'174} is the (unique) multiple escape character. We completely
-ignore the whole notion of potential numbers.
+@<Define token reading...@>=
+(defun make-token-buffer ()
+  (make-array 12 :element-type 'character :fill-pointer 0 :adjustable t))
 
-@<Define symbol parsing...@>=
-(defun parse-symbol (token &aux (token (string token)))
-  (do* ((i 0 (1+ i))
-        (n (length token))
-        (buf (make-array n :element-type 'character :fill-pointer 0))
-        (single-escape) ; escape the next character
-        (multiple-escape) ; escape the following characters
-        (escaped '()) ; list of escaped indices
-        (markers '()) ; list of package marker indices (at most 2)
-        (offset 0) ; difference between normalized and raw indices
-        (all-upper t) ; unescaped character case
-        (all-lower t))
-       ((= i n) (setq escaped (nreverse escaped)
-                      markers (nreverse markers))
-                @<Case-fold the unescaped characters in |buf|@>
-                @<Construct and return a |raw-symbol| instance@>)
-    (let ((char (char token i)))
-      (cond (single-escape
-             (push (vector-push char buf) escaped)
-             (setq single-escape nil))
-            ((char= char #\\)
-             (setq single-escape t))
-            ((char= char #\|)
-             (setq multiple-escape (not multiple-escape)))
-            (multiple-escape
-             (push (vector-push char buf) escaped))
-            ((char= char #\:)
-             (let ((marker (vector-push char buf)))
-               (when (or (> (length markers) 1) ;
-                         (and (first markers) ;
-                              (/= marker (1+ (first markers)))))
-                 (error "Too many colons in ~S." token))
-               (push marker markers)
-               (setq offset (- marker i))))
-            (t (vector-push char buf)
-               (when (both-case-p char)
-                 (if (upper-case-p char)
-                     (setq all-lower nil)
-                     (setq all-upper nil))))))))
+@ Since Common Lisp doesn't provide a |read-extended-token| function,
+we parse the symbol syntax as we read characters one at a time. There's
+a bit of bookkeeping, but nothing overly complex. We'll keep two buffers,
+|tok| and~|raw|, which will eventually be used to produce the `parsed'
+and `split' components, respectively, of the |raw-symbol| instance
+we'll return. We record the location of escapes and package markers
+as we encounter them, and also track the case of unescaped alphabetic
+characters. At the end, we'll case-fold and split up the accumulated token.
+
+@<Define raw symbol reading...@>=
+(defun read-raw-symbol (delimiter &optional stream recursive-p)
+  (loop with tok = (make-token-buffer) ; normalized, eventually case folded
+        and raw = (make-token-buffer) ; raw token with escapes
+        and single-escape ; flag: escape the next character
+        and multiple-escape ; flag: escape the following characters
+        and escaped = '() ; accumulated list of escaped indices
+        and markers = '() ; accumulated list of package marker indices
+        and offset = 0 ; difference between normalized and raw marker indices
+        and all-upper = t ; unescaped character case
+        and all-lower = t ; ditto
+        for char = (read-char stream nil delimiter recursive-p) and i upfrom 0
+        do @<Process the character |char| and maybe extend |tok|@>
+        do (vector-push-extend char raw)
+        finally (setq escaped (nreverse escaped) markers (nreverse markers))
+                @<Case-fold the unescaped characters in |tok|@>
+                @<Construct and return a |raw-symbol| instance@>))
+
+@ We assume that \.{:} is the package marker, \.{\\} is the (unique)
+single escape character, and \.{\char'174} is the (unique) multiple escape
+character. We completely ignore the whole notion of potential numbers.
+The order of the clauses here is important: single escapes, for instance,
+are recognized even inside of a multiple-escape pair, and in the interest
+of preventing run-away arguments, an unescaped closing delimiter
+{\it always\/} terminates the token.
+
+@<Process the char...@>=
+(cond (single-escape
+       (push (vector-push-extend char tok) escaped)
+       (setq single-escape nil))
+      ((char= char #\\)
+       (setq single-escape t))
+      ((char= char delimiter)
+       (loop-finish))
+      ((char= char #\|)
+       (setq multiple-escape (not multiple-escape)))
+      (multiple-escape
+       (push (vector-push-extend char tok) escaped))
+      ((char= char #\:)
+       (let ((marker (vector-push-extend char tok)))
+         (when (or (> (length markers) 1)          
+                   (and (first markers) (/= marker (1+ (first markers)))))
+           (error "Too many colons in token."))
+         (push marker markers)
+         (setq offset (- marker i))))
+      ((token-delimiter-p char)
+       (cerror "Ignore the delimiter."
+               "Unexpected delimiter ~S while reading token." char)
+       (unread-char char stream)
+       (loop-finish))
+      (t (vector-push-extend char tok)
+         (when (both-case-p char)
+           (if (upper-case-p char)
+               (setq all-lower nil)
+               (setq all-upper nil)))))
 
 @ @<Construct and return...@>=
-(let ((print-case (if all-lower :downcase *print-case*)))
-  (if markers
-      (destructuring-bind (i &optional (j i)) markers
-        (make-raw-symbol :package (if (plusp i) (subseq buf 0 i) "KEYWORD")
-                         :internal (string= (subseq buf i (1+ j)) "::")
-                         :name (subseq buf (1+ j))
-                         :prefix (subseq token 0 (- i offset))
-                         :markers (subseq token (- i offset) (1+ (- j offset)))
-                         :suffix (subseq token (1+ (- j offset)))
-                         :print-case print-case))
-      (make-raw-symbol :name buf :suffix token :print-case print-case)))
+(return
+  (let ((print-case (if all-lower :downcase *print-case*)))
+    (if markers
+        (destructuring-bind (i &optional (j i)) markers
+          (make-raw-symbol :package (if (plusp i) (subseq tok 0 i) "KEYWORD")
+                           :internal (string= (subseq tok i (1+ j)) "::")
+                           :name (subseq tok (1+ j))
+                           :prefix (subseq raw 0 (- i offset))
+                           :markers (subseq raw (- i offset) (1+ (- j offset)))
+                           :suffix (subseq raw (1+ (- j offset)))
+                           :print-case print-case))
+        (make-raw-symbol :name tok :suffix raw :print-case print-case))))
 
-@t@l
+@t Don't call |parse-symbol| on a string with embedded {\sc NUL} characters.
+This limitation doesn't matter in practice because this function is only
+used for testing.
+
+@l
+(defun parse-symbol (string)
+  (with-input-from-string (stream string)
+    (read-raw-symbol #\Nul stream)))
+
 (deftest (parse-symbol bare)
   (equalp (parse-symbol "foo")
           (make-raw-symbol :name "FOO" :suffix "foo"))
@@ -780,16 +802,19 @@ ignore the whole notion of potential numbers.
     (error () t))
   t)
 
-@ Next we implement the case folding rules specified by \S23.1.2 of the
+@ The case folding rules for tokens are specified by \S23.1.2 of the
 {\sc ansi} Common Lisp standard (`Effect of Readtable Case on the Lisp
-Reader').
+Reader'). Because of the semantics of |:invert|, we must wait until
+the entire token has been accumulated before we do any actual folding,
+but we've been tracking the case of unescaped characters as we go along
+in the variables |all-lower| and~|all-upper|.
 
 @<Case-fold...@>=
 (labels ((escaped (i) (member i escaped :test #'=))
          (fold (transform)
-           (loop for ch across buf and i upfrom 0
+           (loop for char across tok and i upfrom 0
                  unless (escaped i)
-                   do (setf (char buf i) (funcall transform ch))))
+                   do (setf (char tok i) (funcall transform char))))
          (lower () (fold #'char-downcase))
          (raise () (fold #'char-upcase)))
   (ecase (readtable-case *readtable*)
