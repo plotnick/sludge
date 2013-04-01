@@ -148,24 +148,15 @@ turned back on again afterwards."
                                 :host (car address)
                                 :service (cadr address)
                                 :noquery t
-                                :coding 'utf-8-unix
-                                :filter 'sludge-process-reply))
+                                :coding 'utf-8-unix))
          ((or (stringp address)
               (and (listp address) (setq address (cadr address))))
           (make-network-process :name "sludge"
                                 :family 'local
                                 :service address
                                 :noquery t
-                                :coding 'utf-8-unix
-                                :filter 'sludge-process-reply))
+                                :coding 'utf-8-unix))
          (t (error "Can't connect to SLUDGE server at %s" address)))))
-
-(defun sludge-log (message)
-  "Record the given message in the log buffer and return it."
-  (with-current-buffer (get-buffer-create "*sludge-log*")
-    (goto-char (point-max))
-    (insert message))
-  message)
 
 ;;;; The SLUDGE Protocol.
 
@@ -192,6 +183,12 @@ turned back on again afterwards."
 ;;; which messages belong to what process.
 
 (defun sludge-init-process (process)
+  (set-process-filter process 'sludge-process-filter)
+  (set-process-buffer process
+                      (if (get-buffer-process (current-buffer))
+                          (sludge-log-buffer process)
+                          (current-buffer)))
+  (set-process-sentinel process 'sludge-sentinel)
   (process-put process 'sludge-pending-requests (make-hash-table))
   (process-put process 'sludge-tag-counter 1)
   process)
@@ -238,7 +235,8 @@ turned back on again afterwards."
     (format "%s\n" request)))
 
 (defun sludge-send-request (process request)
-  (process-send-string process (sludge-log (sludge-format-request request))))
+  (process-send-string process
+                       (sludge-log process (sludge-format-request request) t)))
 
 (defun sludge-async-request (process code args ok &optional err)
   (unless (and (setq process (or process (sludge-master-process)))
@@ -259,18 +257,72 @@ turned back on again afterwards."
       (while (process-live-p process)
         (accept-process-output process 0.01)))))
 
-(defun sludge-process-reply (process string)
-  "The SLUDGE process filter function.
-Reads a response from the Lisp and handles it."
-  (sludge-log string)
-  (let ((form (read string)))
-    (cond ((and (consp form)
+(defun sludge-make-log-buffer (process)
+  "Create, initialize, and return a new ephemeral log buffer for PROCESS."
+  (let ((log (generate-new-buffer (format " *sludge/%s*" (buffer-name)))))
+    (process-put process 'sludge-log-buffer log)
+    (set-marker (process-mark process) 1 log)
+    log))
+
+(defun sludge-log-buffer (process &optional nocreate)
+  "Return the log buffer for PROCESS. Unless the optional second argument
+is true, create a new one if the current one has been destroyed."
+  (let ((log (process-get process 'sludge-log-buffer)))
+    (if (or nocreate (buffer-live-p log))
+        log
+        (sludge-make-log-buffer process))))
+
+(defun sludge-log (process string &optional advance)
+  "Append STRING to PROCESS's log buffer.
+
+If the optional second argument ADVANCE is true, set the process mark
+to the end of the log, after the inserted string. This should only be
+used when logging a purely informative message (e.g., a request) that
+should not be processed as a reply.
+
+Also tries to move point to the end of the log if it was there already.
+This is purely cosmetic, and has no special significance. If the buffer
+is displayed in a window, it won't even work."
+  (with-current-buffer (sludge-log-buffer process)
+    (let ((point-at-end (= (point) (point-max))))
+      (save-excursion
+        (goto-char (point-max))
+        (insert string)
+        (when advance (set-marker (process-mark process) (point))))
+      (when point-at-end (goto-char (point-max)))))
+  string)
+
+(defun sludge-process-filter (process string)
+  "Read and handle a message from the Lisp process.
+
+Since there's no guarantee that we will receive a message all at
+once, we use the process log buffer to accumulate partial messages.
+The process mark should always be at the beginning of the next
+unprocessed response."
+  (sludge-log process string)
+  (let* ((mark (copy-marker (process-mark process)))
+         (form (condition-case nil (read (process-mark process))
+                 (end-of-file nil))))
+    (cond ((null form)
+           ;; Incomplete message: reset process mark and wait for more input.
+           (set-marker (process-mark process) mark (marker-buffer mark)))
+          ((and (consp form)
                 (>= (length form) 3)
                 (member (nth 0 form) '(:ok :error))
                 (symbolp (nth 1 form))
                 (numberp (nth 2 form)))
+           ;; Valid message structure detected: dispatch.
            (sludge-handle-response process form))
           (t (error "Invalid response from Lisp: %s" form)))))
+
+(defun sludge-sentinel (process status)
+  "Called whenever the SLUDGE process changes status."
+  (let ((log (sludge-log-buffer process t))
+        (buffer (process-buffer process)))
+    (when (buffer-live-p log) (kill-buffer log))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (sludge-mode 0)))))
 
 ;;;; Package handling.
 
