@@ -255,7 +255,10 @@ turned back on again afterwards."
 
 (defun sludge-make-log-buffer (process)
   "Create, initialize, and return a new ephemeral log buffer for PROCESS."
-  (let ((log (generate-new-buffer (format " *sludge/%s*" (buffer-name)))))
+  (let ((log (generate-new-buffer
+              (format " *sludge/%s*"
+                      (replace-regexp-in-string "^\\*\\(.*\\)\\*$" "\\1"
+                                                (buffer-name))))))
     (process-put process 'sludge-log-buffer log)
     (set-marker (process-mark process) 1 log)
     log))
