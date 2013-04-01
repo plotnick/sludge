@@ -9,9 +9,9 @@
 
 ;; Each buffer that wishes to communicate with the server gets its own
 ;; connection in the form of a network process object stored in the
-;; buffer-local variable `sludge-process'. The value of that variable in
-;; the inferior lisp buffer is the "master" process, in the sense that
-;; future connections will be made to the same address as that one.
+;; buffer-local variable `sludge-process'. The global value of that
+;; variable is the "master" process, in the sense that future connections
+;; will be made to the same address as that one.
 
 (make-variable-buffer-local
  (defvar sludge-mode nil
@@ -47,7 +47,7 @@ be made and used for background interaction with a Common Lisp system."
          (condition-case err
              (setq sludge-process
                    (let ((master (sludge-master-process)))
-                     (if master
+                     (if (and master (process-live-p master))
                          (sludge-connect (process-contact master))
                          (sludge-start-server (sludge-default-address)))))
            (error (setq sludge-mode nil)
@@ -113,50 +113,52 @@ turned back on again afterwards."
   "Start the SLUDGE server in an inferior Lisp and poll for connection."
   (interactive (list (sludge-default-address)))
   (sludge-send-lisp-string (sludge-start-server-command address))
-  (with-sludge-lisp-buffer
-    (setq sludge-process ; will become master process
-          (or (catch 'connected
-                (dotimes (i sludge-max-retries)
-                  (sit-for sludge-poll-rate)
-                  (message "Polling %s" address)
-                  (let ((proc (ignore-errors (sludge-connect address))))
-                    (when proc
-                      (message "Connected to SLUDGE server at %s" address)
-                      (throw 'connected proc)))))
-              (error "Timed out connecting to SLUDGE server at %s" address)))))
+  (setq-default sludge-process (sludge-poll-for-connection address)))
+
+(defun sludge-poll-for-connection (address)
+  "Repeatedly poll for a connection to ADDRESS."
+  (or (catch 'connected
+        (dotimes (i sludge-max-retries)
+          (sit-for sludge-poll-rate)
+          (message "Polling %s" address)
+          (let ((process (ignore-errors (sludge-connect address))))
+            (when process
+              (message "Connected to SLUDGE server at %s" address)
+              (throw 'connected process)))))
+      (error "Timed out connecting to SLUDGE server at %s" address)))
 
 (defun sludge-stop-server ()
-  "Stop the SLUDGE server and disconnect all clients."
+  "Stop the SLUDGE server."
   (interactive)
-  ;; This should be a protocol message.
+  ;; This ought to be a protocol message.
   (sludge-send-lisp-string (sludge-stop-server-command))
   (message "SLUDGE server stopped")
-  (with-sludge-lisp-buffer
-    (when sludge-process
-      (delete-process sludge-process)
-      (setq sludge-process nil))))
+  (when (sludge-master-process)
+    (delete-process (sludge-master-process))
+    (setq-default sludge-process nil)))
 
 (defun sludge-master-process ()
-  "Return the primary SLUDGE process."
-  (ignore-errors (with-sludge-lisp-buffer sludge-process)))
+  "Return the master SLUDGE process."
+  (ignore-errors (default-value 'sludge-process)))
 
-(defun sludge-connect (address)
+(defun sludge-connect (address &optional master)
   "Connect to the SLUDGE server at ADDRESS."
-  (sludge-init-process
-   (cond ((and (listp address) (car address))
-          (make-network-process :name "sludge"
-                                :host (car address)
-                                :service (cadr address)
-                                :noquery t
-                                :coding 'utf-8-unix))
-         ((or (stringp address)
-              (and (listp address) (setq address (cadr address))))
-          (make-network-process :name "sludge"
-                                :family 'local
-                                :service address
-                                :noquery t
-                                :coding 'utf-8-unix))
-         (t (error "Can't connect to SLUDGE server at %s" address)))))
+  (let ((name (if master "sludge-master" "sludge-client")))
+    (sludge-init-process
+     (cond ((and (listp address) (car address))
+            (make-network-process :name name
+                                  :host (car address)
+                                  :service (cadr address)
+                                  :noquery t
+                                  :coding 'utf-8-unix))
+           ((or (stringp address)
+                (and (listp address) (setq address (cadr address))))
+            (make-network-process :name name
+                                  :family 'local
+                                  :service address
+                                  :noquery t
+                                  :coding 'utf-8-unix))
+           (t (error "Can't connect to SLUDGE server at %s" address))))))
 
 ;;;; The SLUDGE Protocol.
 
