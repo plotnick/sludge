@@ -141,24 +141,18 @@ turned back on again afterwards."
   "Return the master SLUDGE process."
   (ignore-errors (default-value 'sludge-process)))
 
-(defun sludge-connect (address &optional master)
+(defun sludge-connect (address &optional master coding)
   "Connect to the SLUDGE server at ADDRESS."
-  (let ((name (if master "sludge-master" "sludge-client")))
-    (sludge-init-process
-     (cond ((and (listp address) (car address))
-            (make-network-process :name name
-                                  :host (car address)
-                                  :service (cadr address)
-                                  :noquery t
-                                  :coding 'utf-8-unix))
-           ((or (stringp address)
-                (and (listp address) (setq address (cadr address))))
-            (make-network-process :name name
-                                  :family 'local
-                                  :service address
-                                  :noquery t
-                                  :coding 'utf-8-unix))
-           (t (error "Can't connect to SLUDGE server at %s" address))))))
+  (setq address (cond ((stringp address) (list nil address))
+                      ((and (listp address) (cadr address)) address)
+                      (t (error "Can't connect to server at %s" address))))
+  (sludge-init-process
+   (make-network-process :name (if master "sludge-master" "sludge-client")
+                         :family (if (car address) nil 'local)
+                         :host (car address)
+                         :service (cadr address)
+                         :noquery t
+                         :coding (or coding 'utf-8-unix))))
 
 ;;;; The SLUDGE Protocol.
 
