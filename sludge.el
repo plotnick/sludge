@@ -43,6 +43,7 @@ be made and used for background interaction with a Common Lisp system."
   (cond ((if (eq arg 'toggle)
              (not sludge-mode)
              (> (prefix-numeric-value arg) 0))
+         ;; Turn on SLUDGE mode.
          (condition-case err
              (setq sludge-process
                    (let ((master (sludge-master-process)))
@@ -52,6 +53,7 @@ be made and used for background interaction with a Common Lisp system."
            (error (setq sludge-mode nil)
                   (signal (car err) (cdr err))))
          (setq sludge-mode t)
+         (add-hook 'before-revert-hook 'sludge-before-revert-hook nil t)
          (run-hooks 'sludge-mode-hooks)
          (when (called-interactively-p 'interactive)
            (message "SLUDGE mode enabled")))
@@ -62,6 +64,7 @@ be made and used for background interaction with a Common Lisp system."
                  (delete-process sludge-process)))
            (setq sludge-process nil
                  sludge-mode nil)
+           (remove-hook 'before-revert-hook 'sludge-before-revert-hook t)
            (when (called-interactively-p 'interactive)
              (message "SLUDGE mode disabled"))))
   (force-mode-line-update)
@@ -75,6 +78,17 @@ be made and used for background interaction with a Common Lisp system."
     (define-key map "\C-c\C-d" 'sludge-describe-symbol)
     map)
   "Keymap for SLUDGE minor mode.")
+
+(defun sludge-before-revert-hook ()
+  "Turn SLUDGE mode off before revert, and arrange to have it
+turned back on again afterwards."
+  (add-hook 'after-revert-hook 'sludge-after-revert-hook nil t)
+  (sludge-mode 0))
+
+(defun sludge-after-revert-hook ()
+  "Turn SLUDGE mode back on after revert."
+  (remove-hook 'after-revert-hook 'sludge-after-revert-hook t)
+  (sludge-mode 1))
 
 (add-minor-mode 'sludge-mode " SLUDGE" sludge-mode-map)
 
