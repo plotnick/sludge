@@ -36,8 +36,25 @@
 Should contain a numeric format operator, for which the Lisp
 process id will be provided as argument.")
 
-(defun sludge-default-address ()
-  (format sludge-default-address-format (process-id (sludge-lisp-proc))))
+;;; Utility functions.
+
+(defun ensure-string (object)
+  "Return the string designated by OBJECT."
+  (cond ((stringp object) object)
+        ((symbolp object) (symbol-name object))
+        (t (error "Not a string designator: %S" object))))
+
+(defun ensure-symbol (object)
+  "Return the symbol designated by OBJECT."
+  (cond ((stringp object) (intern object))
+        ((symbolp object) object)
+        (t (error "Not a symbol designator: %S" object))))
+
+(defun sludge-master-process ()
+  "Return the master SLUDGE process."
+  (ignore-errors (default-value 'sludge-process)))
+
+;;; SLUDGE minor mode definition.
 
 (defun sludge-mode (&optional arg)
     "Toggle background Lisp interaction mode.
@@ -99,19 +116,30 @@ turned back on again afterwards."
 
 (add-minor-mode 'sludge-mode " SLUDGE" sludge-mode-map)
 
+;;; Starting, stopping, and connecting to the server.
+
 (defun sludge-lisp-proc ()
+  "Return the inferior Lisp process object.
+This process is used only to send the start and stop commands for the
+SLUDGE server. Normal protocol traffic uses the local `sludge-process'
+connection objects."
   (cond ((and (fboundp 'inferior-lisp-proc) inferior-lisp-buffer)
          (inferior-lisp-proc))
         (t (error "Can't find Lisp process"))))
+
+(defun sludge-send-lisp-string (string &optional process)
+  "Send a command to the inferior Lisp."
+  (comint-send-string (or process (sludge-lisp-proc)) string))
+
+(defun sludge-default-address ()
+  "Return the default address of the SLUDGE server."
+  (format sludge-default-address-format (process-id (sludge-lisp-proc))))
 
 (defun sludge-start-server-command (address)
   (format "(sludge:start-server :address %S)\n" address))
 
 (defun sludge-stop-server-command ()
   "(sludge:stop-server)")
-
-(defun sludge-send-lisp-string (string &optional process)
-  (comint-send-string (or process (sludge-lisp-proc)) string))
 
 (defun sludge-start-server (address)
   "Start the SLUDGE server in an inferior Lisp and poll for connection."
@@ -141,10 +169,6 @@ turned back on again afterwards."
     (delete-process (sludge-master-process))
     (setq-default sludge-process nil)))
 
-(defun sludge-master-process ()
-  "Return the master SLUDGE process."
-  (ignore-errors (default-value 'sludge-process)))
-
 (defun sludge-connect (address &optional master coding)
   "Connect to the SLUDGE server at ADDRESS."
   (setq address (cond ((stringp address) (list nil address))
@@ -157,6 +181,8 @@ turned back on again afterwards."
                          :service (cadr address)
                          :noquery t
                          :coding (or coding 'utf-8-unix))))
+
+;;; Communicating with the server.
 
 ;; These must match the definitions on the server side, or else there will
 ;; be much wailing and gnashing of teeth.
@@ -360,15 +386,13 @@ unprocessed response."
 
 ;;; Arglist handling.
 
-;; Arglists come back as pre-formatted strings. We keep a per-buffer,
+;; Arglists come back as pre-formatted strings. We keep a per-process,
 ;; one-element cache of the most recently fetched arglist, which helps
 ;; reduce request traffic in many cases.
 
 (defun sludge-cache-arglist (fn arglist)
   (when sludge-process
-    (process-put sludge-process
-                 'sludge-last-arglist
-                 (cons fn arglist))))
+    (process-put sludge-process 'sludge-last-arglist (cons fn arglist))))
 
 (defun sludge-last-arglist ()
   (when sludge-process
@@ -390,6 +414,7 @@ Intended to be used as a value for `eldoc-documentation-function'."
               (sludge-show-arglist symbol)))))))
 
 (defun sludge-show-arglist (&optional fn)
+  "Display the argument list for the given function."
   (interactive (lisp-symprompt "Function argument list" (lisp-fn-called-at-pt)))
   (setq fn (ensure-symbol fn))
   (sludge-cache-arglist fn nil) ; placeholder
@@ -399,11 +424,6 @@ Intended to be used as a value for `eldoc-documentation-function'."
                           (sludge-cache-arglist fn arglist)
                           (eldoc-message arglist))
                         #'ignore))
-
-(defun ensure-string (object)
-  (cond ((stringp object) object)
-        ((symbolp object) (symbol-name object))
-        (t (error "Not a string designator: %S" object))))
 
 (defun sludge-setup-eldoc ()
   (set (make-local-variable 'eldoc-documentation-function)
@@ -419,11 +439,6 @@ Intended to be used as a value for `eldoc-documentation-function'."
                         (lambda (docstring)
                           (eldoc-message docstring))
                         #'ignore))
-
-(defun ensure-symbol (object)
-  (cond ((stringp object) (intern object))
-        ((symbolp object) object)
-        (t (error "Not a symbol designator: %S" object))))
 
 (defun sludge-show-function-documentation (&optional fn)
   (interactive (lisp-symprompt "Function documentation" (lisp-fn-called-at-pt)))
