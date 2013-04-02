@@ -34,7 +34,7 @@ be simple enough to port to other implementations.
   (:use "COMMON-LISP" "SB-BSD-SOCKETS" "SB-THREAD")
   (:import-from "SB-INTROSPECT" "FUNCTION-LAMBDA-LIST")
   (:import-from "SB-POSIX" "MKTEMP" "UMASK")
-  (:export "START-SERVER" "STOP-SERVER"))
+  (:export "START-SERVER" "STOP-SERVER" "SERVER-LOG"))
 @e
 (in-package "SLUDGE")
 
