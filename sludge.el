@@ -1,17 +1,24 @@
 ;;; sludge.el --- background Lisp interaction -*- lexical-binding: t -*-
 
+;; Author: Alex Plotnick <plotnick@cs.brandeis.edu>
+;; Keywords: processes, lisp
+
 ;;; Commentary:
 
 ;; The SLUDGE server runs in a Common Lisp system, which will generally be
 ;; running as an inferior-lisp process. To start the system, we (Emacs) tell
 ;; the Lisp to start the server and that it should listen at an address that
-;; we provide.
+;; we provide. We then poll for a connection at that address.
 
-;; Each buffer that wishes to communicate with the server gets its own
+;; Each buffer that wishes to communicate with the Lisp gets its own
 ;; connection in the form of a network process object stored in the
 ;; buffer-local variable `sludge-process'. The global value of that
 ;; variable is the "master" process, in the sense that future connections
-;; will be made to the same address as that one.
+;; will be made to the same address as that one. Each process also has
+;; an associated log buffer, which is used primarily for accumulating
+;; responses (since they may arrive piecemeal).
+
+;;; Code:
 
 (make-variable-buffer-local
  (defvar sludge-mode nil
@@ -154,10 +161,8 @@ turned back on again afterwards."
                          :noquery t
                          :coding (or coding 'utf-8-unix))))
 
-;;;; The SLUDGE Protocol.
-
-;;; These must match the definitions on the server side, or else there will
-;;; be much wailing and gnashing of teeth.
+;; These must match the definitions on the server side, or else there will
+;; be much wailing and gnashing of teeth.
 
 (defun make-sludge-request (code tag &rest args)
   (apply #'list code tag args))
@@ -167,16 +172,16 @@ turned back on again afterwards."
 (defun sludge-response-tag (message) (nth 2 message))
 (defun sludge-response-args (message) (nthcdr 3 message))
 
-;;; In the SLUDGE protocol, we send requests from Emacs to the Lisp server,
-;;; and possibly receive responses to those requests. Requests are tagged
-;;; with client-generated integer identifiers. For each connection to a
-;;; server, we'll keep our pending requests in a hash table keyed on
-;;; request codes, with values of the form (TAG OK ERR). If a response
-;;; comes in with a tag less than TAG, we ignore it; otherwise, we invoke
-;;; either OK or ERR with the arguments from the response message.
-;;; The pending requests table and tag counter are both stored in the
-;;; connection process's plist, so there's no chance of confusion about
-;;; which messages belong to what process.
+;; In the SLUDGE protocol, we send requests from Emacs to the Lisp server,
+;; and possibly receive responses to those requests. Requests are tagged
+;; with client-generated integer identifiers. For each connection to a
+;; server, we'll keep our pending requests in a hash table keyed on
+;; request codes, with values of the form (TAG OK ERR). If a response
+;; comes in with a tag less than TAG, we ignore it; otherwise, we invoke
+;; either OK or ERR with the arguments from the response message.
+;; The pending requests table and tag counter are both stored in the
+;; connection process's plist, so there's no chance of confusion about
+;; which messages belong to what process.
 
 (defun sludge-init-process (process)
   (set-process-filter process 'sludge-process-filter)
@@ -323,7 +328,7 @@ unprocessed response."
       (with-current-buffer buffer
         (sludge-mode 0)))))
 
-;;;; Package handling.
+;;; Package handling.
 
 ;; Adapted from `slime-search-buffer-package'.
 (defun sludge-scry-buffer-package ()
@@ -356,11 +361,11 @@ unprocessed response."
                           (lambda (condition message)
                             (message message)))))
 
-;;;; Arglist handling.
+;;; Arglist handling.
 
-;;; Arglists come back as pre-formatted strings. We keep a per-buffer,
-;;; one-element cache of the most recently fetched arglist, which helps
-;;; reduce request traffic in many cases.
+;; Arglists come back as pre-formatted strings. We keep a per-buffer,
+;; one-element cache of the most recently fetched arglist, which helps
+;; reduce request traffic in many cases.
 
 (defun sludge-cache-arglist (fn arglist)
   (when sludge-process
@@ -372,8 +377,8 @@ unprocessed response."
   (when sludge-process
     (process-get sludge-process 'sludge-last-arglist)))
 
-;;; To avoid reinventing the wheel yet again, we'll hook into ElDoc and use
-;;; its message display code.
+;; To avoid reinventing the wheel yet again, we'll hook into ElDoc and use
+;; its message display code.
 
 (defun sludge-documentation-function ()
   "Display a documentation string for the function at or around point.
@@ -409,7 +414,7 @@ Intended to be used as a value for `eldoc-documentation-function'."
 
 (add-hook 'sludge-mode-hooks 'sludge-setup-eldoc)
 
-;;;; Documentation handling.
+;;; Documentation handling.
 
 (defun sludge-show-documentation (name doc-type)
   (sludge-async-request sludge-process
@@ -439,7 +444,7 @@ Intended to be used as a value for `eldoc-documentation-function'."
                           (with-output-to-temp-buffer "*describe*"
                             (princ description)))))
 
-;;;; Very simple symbol completion.
+;;; Very simple symbol completion.
 
 (defun sludge-symbol-completions (symbol)
   (setq symbol (ensure-symbol symbol))
@@ -459,3 +464,5 @@ Intended to be used as a value for `eldoc-documentation-function'."
             nil 'local))
 
 (add-hook 'sludge-mode-hooks 'sludge-setup-completion)
+
+;;; sludge.el ends here
