@@ -104,9 +104,6 @@ turned back on again afterwards."
          (inferior-lisp-proc))
         (t (error "Can't find Lisp process"))))
 
-(defmacro with-sludge-lisp-buffer (&rest body)
-  `(with-current-buffer inferior-lisp-buffer ,@body))
-
 (defun sludge-start-server-command (address)
   (format "(sludge:start-server :address %S)\n" address))
 
