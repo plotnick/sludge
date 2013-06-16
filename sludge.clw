@@ -107,13 +107,13 @@ type of address given, with slightly hairy defaulting behavior.
     socket))
 
 @ In SBCL's socket library, local (Unix) domain socket addresses are
-represented by namestrings, and {\sc inet} domain socket addresses are
+represented by filenames, and {\sc inet} domain socket addresses are
 represented by lists of the form |(ipv4-address port)|. In an effort
 to be both slightly more accommodating to the user and more Lisp-like,
 we accept a slightly different set of socket address designators, which
 are easier to express in Lisp than prose. Note the defaulting for address
 and port, and that strings are ambiguous: we first try to parse them as
-dotted-quads, and only if that fails do we treat them as namestrings.
+dotted-quads, and only if that fails do we treat them as filenames.
 
 @<Resolve |address| as a socket address designator@>=
 (etypecase address
@@ -124,9 +124,9 @@ dotted-quads, and only if that fails do we treat them as namestrings.
   (string (or (ignore-errors (list (make-inet-address address) port))
               (pathname address))))
 
-@t We'll test both namestrings and pathnames as designators for local
-domain socket addresses. We assume that {\tt /tmp} is an acceptable place
-to put temporary socket files.
+@t We'll test both filenames and pathnames as designators for local domain
+socket addresses. We assume that {\tt /tmp} is an acceptable place to put
+temporary socket files.
 
 @l
 (defun make-temp-socket-name ()
@@ -322,7 +322,7 @@ used to override the default behavior.
 @ With the above machinery in place, we come now to the primary public
 interface of the whole system: a pair of functions which start and stop,
 respectively, a server loop thread. If the |spawn| argument to |start-server|
-is true, however, the server loop will run in the current thread; this is
+is false, however, the server loop will run in the current thread; this is
 for debugging purposes only. Note that running client threads are currently
 {\it not\/} aborted when the server is stopped; only the server loop itself
 is halted, so no new client connections will be accepted.
@@ -412,14 +412,14 @@ protocol might have some kind of encoding negotiation.) The characters form
 s-expressions, but with a highly restricted syntax. The s-exps denote
 {\it messages\/},which are divided into {\it requests\/} and {\it responses\/}.
 
-Requests are represented as lists of the form |(code tag args)|, where
+Requests are represented as lists of the form |(code tag . args)|, where
 |code| is any keyword symbol other than |:ok| and~|:error|, |tag| is a
 client-supplied integer identifier for this message, and |args| is an
 arbitrary list of of Lisp objects. If |args| is null and the tag is not
-important, the parentheses may be elided; thus |:code| is interpreted as a
-designator for |(:code 0)|.
+important, the parentheses may be elided; thus, |:code| is interpreted
+as a designator for |(:code 0)|.
 
-Responses take the form |(response-code request-code tag args)|, where
+Responses take the form |(response-code request-code tag . args)|, where
 |response-code| is either |:ok| or~|:error|, and the |request-code| and
 |tag| are taken from the request to which this message is a response.
 A successful request generates a response whose status is |:ok|, and the
